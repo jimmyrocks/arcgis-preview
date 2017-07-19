@@ -24,7 +24,9 @@ app.get('/sql', function (req, res) {
   var sql = req.query.q;
   var format = req.query.format || 'topojson';
   console.log('Executing SQL: ' + sql, format);
-  // query using pg-promise
+  // query using superagent
+  // Just going to read a file for now
+
   jsonExport({});
 });
 
