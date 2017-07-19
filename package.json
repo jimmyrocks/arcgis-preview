@@ -1,16 +1,16 @@
 {
-  "name": "postgis-preview",
+  "name": "geopreview",
   "version": "1.0.0",
-  "description": "A lightweight node api and frontend for quicky previewing PostGIS queries",
+  "description": "A lightweight node api and frontend for quicky previewing ArcGIS queries",
   "main": "config.js",
   "dependencies": {
-    "async": "~2.1.4",
+    "async": "~2.5.0",
     "dotenv": "^4.0.0",
     "express": "^4.13.4",
-    "jsonexport": "^1.1.0",
-    "superagent": "3.3.2",
+    "jsonexport": "^2.0.10",
+    "superagent": "3.5.2",
     "terraformer-arcgis-parser": "1.0.5",
-    "topojson": "~2.2.0",
+    "topojson": "~3.0.0",
     "wellknown": "~0.5.0",
     "wkx": "^0.4.1"
   },
