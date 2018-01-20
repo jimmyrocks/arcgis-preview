@@ -4,15 +4,9 @@
   "description": "A lightweight node api and frontend for quicky previewing ArcGIS queries",
   "main": "config.js",
   "dependencies": {
-    "async": "~2.5.0",
-    "dotenv": "^4.0.0",
-    "express": "^4.13.4",
-    "jsonexport": "^2.0.10",
-    "superagent": "3.5.2",
-    "terraformer-arcgis-parser": "1.0.5",
-    "topojson": "~3.0.0",
-    "wellknown": "~0.5.0",
-    "wkx": "^0.4.1"
+    "express": "4.16.2",
+    "superagent": "3.8.2",
+    "@esri/arcgis-to-geojson-utils": "1.0.5"
   },
   "devDependencies": {},
   "scripts": {
