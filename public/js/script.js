@@ -1,7 +1,7 @@
 (function(){
   'use strict'
   //initialize a leaflet map
-  var map = L.map('map')
+  var map = L.map('map', {minZoom: 0, maxZoom: 21})
     .setView([40.708816,-74.008799], 11);
   
   //layer will be where we store the L.geoJSON we'll be drawing on the map
@@ -23,6 +23,53 @@ attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreet
     submitQuery();
   });
 
+  function urlify(obj) {
+    var params = [];
+    for (var objName in obj) {
+      params.push(encodeURIComponent(objName) + '=' + encodeURIComponent(obj[objName]));
+    }
+    return params.join('&');
+  }
+
+  function createQueryObj(historic) {
+    var url = window.endpoint.getDoc().getValue();
+    var where = window.editor.getDoc().getValue();
+    var bbox = window.useExtent.checked &&
+               map.getBounds()._southWest.lng + ',' +
+               map.getBounds()._southWest.lat + ',' +
+               map.getBounds()._northEast.lng + ',' +
+               map.getBounds()._northEast.lat;
+    
+    //clear the map
+    if( map.hasLayer(layer)) {
+      layer.clearLayers();
+    }
+
+    if (historic) {
+      addToHistory({
+        endpoint: url,
+        where: where,
+        bbox: bbox
+      });
+    }
+
+    //Strip the trailing slash if there is one
+    var baseUrl = url.replace(/\/{1,}$/,'');
+    var queryObj = {
+      'url': baseUrl,
+      'where':where,
+      'geometry': bbox === false ? '' : bbox,
+      'geometryType': 'esriGeometryEnvelope',
+      'inSR':'4326',
+      'outFields':'*',
+      'returnGeometry':'true',
+      'outSR':'4326',
+      'f':'JSON'
+    };
+
+    return queryObj;
+  }
+
   function submitQuery() {
     $('#notifications').hide();
     $('#download').hide();
@@ -30,50 +77,44 @@ attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreet
 
     clearTable();
 
-    sql = editor.getDoc().getValue();
-    
-    //clear the map
-    if( map.hasLayer(layer)) {
-      layer.clearLayers();
-    }
 
-    addToHistory(sql);
-  
-    //pass the query to the sql api endpoint
-    $.getJSON('/sql?q=' + encodeURIComponent(sql), function(data) {
+    // pass the query to the sql api endpoint
+    $.getJSON('/get?', createQueryObj(true), function(data) {
+      console.log('dataz', data);
       $('#run').removeClass('active');
       $('#notifications').show();
       $('#download').show();
-      if (data.error !== undefined){
+      if (data.error !== undefined) {
         //write the error in the sidebar
         $('#notifications').removeClass().addClass('alert alert-danger');
-        $('#notifications').text(data.error);
-      } else if (data.objects.output.geometries.length == 0) {
+        $('#notifications').text(typeof data.error === 'string' ? data.error : JSON.stringify(data.error));
+      } else if (data.features.length == 0) {
         $('#notifications').removeClass().addClass('alert alert-warning');
         $('#notifications').text('Your query returned no features.');
       } else {
-        //convert topojson coming over the wire to geojson using mapbox omnivore
-        var features = omnivore.topojson.parse(data); //should this return a featureCollection?  Right now it's just an array of features.
-        var featureCount = data.objects.output.geometries.length;
+        var features = data.features;
         var geoFeatures = features.filter(function(feature) {
           return feature.geometry;
         });
         $('#notifications').removeClass().addClass('alert alert-success');
         if (geoFeatures.length) {
-          addLayer( geoFeatures ); //draw the map layer
-          $('#notifications').text(featureCount + ' features returned.');
+          addLayer(geoFeatures); //draw the map layer
+          $('#notifications').text(features.length + ' features returned.');
         } else {
           // There is no map to display, so switch to the data view
-          $('#notifications').html(featureCount + ' features returned.<br/>No geometries returned, see the <a href="#" class="data-view">data view</a> for results.');
+          $('#notifications').html(features.length+ ' features returned.<br/>No geometries returned, see the <a href="#" class="data-view">data view</a> for results.');
           //toggle map and data view
-          $('a.data-view').click(function(){
+          $('a.data-view').click(function() {
             $('#map').hide();
             $('#table').show();
           });
 
         }
-        buildTable( features ); //build the table
+        buildTable(features); //build the table
       }
+    }, function(e) {
+      $('#notifications').removeClass().addClass('alert alert-danger');
+      $('#notifications').text('unknown error');
     });
   };
 
@@ -95,23 +136,27 @@ attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreet
   //forward and backward buttons for query history
   $('#history-previous').click(function() {
     historyIndex--;
-    updateSQL(queryHistory[historyIndex]);
+    updateEntry(queryHistory[historyIndex]);
     updateHistoryButtons();
   });
 
   $('#history-next').click(function() {
     historyIndex++;
-    updateSQL(queryHistory[historyIndex]);
+    updateEntry(queryHistory[historyIndex]);
     updateHistoryButtons();
   });
 
   $('#geojson').click(function() {
-    var url = '/sql?q=' + encodeURIComponent(sql) + '&format=geojson';
+    var queryObj = createQueryObj(false);
+    queryObj.format = 'geojson';
+    var url = '/get?' + urlify(queryObj);
     window.open(url, '_blank');
   });
 
   $('#csv').click(function() {
-    var url = '/sql?q=' + encodeURIComponent(sql) + '&format=csv';
+    var queryObj = createQueryObj(false);
+    queryObj.format = 'csv';
+    var url = '/get?' + urlify(queryObj);
     window.open(url, '_blank');
   });
 
@@ -199,8 +244,6 @@ attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreet
         $tr.append('<td>' + feature.properties[field] + '</td>')
       })
 
-
-
       $('#table').find('tbody').append($tr);
     });
 
@@ -213,20 +256,22 @@ attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreet
     $('#table').find('tbody').empty();
   };
 
-  function addToHistory(sql) {
+  function addToHistory(entry) {
     //only store the last 25 queries
     if(queryHistory.length>25) {
       queryHistory.shift();
     }
 
-    queryHistory.push(sql);
+    queryHistory.push(entry);
     localStorage.history = JSON.stringify(queryHistory);
     historyIndex++;
     updateHistoryButtons();
   }
 
-  function updateSQL(sql) {
-    editor.setValue(sql);
+  function updateEntry(entry) {
+    endpoint.setValue(entry.url);
+    editor.setValue(entry.where);
+    // bbox.setValue(entry.bbox);
   }
 
   //enable and disable history buttons based on length of queryHistory and historyIndex
@@ -248,16 +293,30 @@ attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreet
 
 //Load codemirror for syntax highlighting
 window.onload = function() {            
-  window.editor = CodeMirror.fromTextArea(document.getElementById('sqlPane'), {
+  window.endpoint = CodeMirror.fromTextArea(document.getElementById('endpointPane'), {
+    indentWithTabs: true,
+    smartIndent: true,
+    lineNumbers: false,
+    matchBrackets : false,
+    autofocus: true,
+    lineWrapping: true,
+    theme: 'monokai'
+  });
+  endpoint.setSize(null,115);
+
+  window.editor = CodeMirror.fromTextArea(document.getElementById('wherePane'), {
     mode: 'text/x-pgsql',
     indentWithTabs: true,
     smartIndent: true,
     lineNumbers: false,
     matchBrackets : true,
-    autofocus: true,
+    autofocus: false,
     lineWrapping: true,
     theme: 'monokai'
   });
+  $('.CodeMirror')[1].setAttribute('style','top:-14px');
   editor.replaceRange('\n', {line:2,ch:0}); // create newline for editing
   editor.setCursor(2,0);
+
+  window.useExtent = $("input#useExtent")[0];
 };
