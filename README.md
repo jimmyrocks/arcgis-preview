@@ -1,32 +1,34 @@
 # ArcGIS Geo Preview
-A lightweight node api and frontend for quickly previewing ArcGIS Geo queries. _Pull Requests Welcomed!_  Take a look at the [open issues](https://github.com/chriswhong/postgis-preview/issues)
-
-![preview](https://cloud.githubusercontent.com/assets/1833820/14897977/7e8088cc-0d52-11e6-9c0e-b56f3b2af954.gif)
+A lightweight frontend for quickly previewing ArcGIS Geo queries. _Pull Requests Welcomed!_  Take a look at the [open issues](https://github.com/jimmyrocks/arcgis-preview/issues)
+Forked from [PostGIS Preview](https://github.com/chriswhong/postgis-preview).
 
 ### Why
-Our team at the NYC Department of City Planning needed to be able to test out ArcGIS Geo queries in a local environment and iterate quickly.  CartoDB provides this functionality, giving users a SQL pane and a map view to quickly see the geometries returned from the database (This UI and SQL preview workflow are inspired by the CartoDB editor)
+I have been working with many ArcGIS REST endpoints, and wanted a quick and easy way to visualize the data contained in these systems.
+
+I have been using the [PostGIS Preview](https://github.com/chriswhong/postgis-preview) project to visualize some internal PostGIS databases, and thought that this format would be useful for ArcGIS REST endpoints as well. Since ArcGIS REST endpoints are already web servers and support jsonp, I realized that this project could be implemented as just a frontend and hosted directly from Github.
+
+### The original postgis-preview project background
+Our team at the NYC Department of City Planning needed to be able to test out PostGIS Geo queries in a local environment and iterate quickly.  CartoDB provides this functionality, giving users a SQL pane and a map view to quickly see the geometries returned from the database (This UI and SQL preview workflow are inspired by the CartoDB editor)
 
 When asking on Twitter if anyone had solutions to this problem, responses included:
   - Run queries in pgadmin and use `ST_asGeoJson()`, copy and paste the geojson into [geojson.io](http://www.geojson.io)
   - Use [QGIS](http://www.qgis.org/en/site/) dbmanager.  This works, but requires a few clicks once the data are returned to add them to the map.
   - Use various command line tools that show previews in the terminal or send the results to geojson.io programmatically.
 
-### How it works
-The express.js app has a single endpoint:  `/sql` that is passed a SQL query `q` as a url parameter.  That query is passed to ArcGIS Geo using the _pg-promise_ module.  The resulting data are transformed into topojson using a modified _dbgeo_ module (modified to include parsing WKB using the _WKX_ module), and the response is sent to the frontend.
-
-The frontend is a simple Bootstrap layout with a Leaflet map, CartoDB basemaps, a table, and a SQL pane.  The TopoJSON from the API is parsed using _omnivore_ by Mapbox, and added to the map as an L.geoJson layer with generic styling.
+### How ArcGIS Preview works
+The frontend is a simple Bootstrap layout with a Leaflet map, CartoDB basemaps, a table, and a SQL pane.  The ESRI Json from the ArcGIS REST Endpoint is parsed using the jsonConverters.js code from Esri's [geojson-utils](https://github.com/Esri/geojson-utils) project. It adds that GeoJSON to the map as an L.geoJson layer with generic styling.
 
 ### How to Use
 
-- Clone this repo
-- Have a ArcGIS Geo instance running somewhere that the node app can talk to
-- Edit `.env.sample` to include your `DATABASE_URL`, rename it `.env`
-- Install dependencies `npm install`
-- Run the express app `node server.js`
-- Load the frontend `http://localhost:4000`
+- Navigate to: [The Web Interface](https://jimmyrocks.github.io/arcgis-preview)
+- Enter your ArcGIS endpoint Feature Server or Map Server, include the number as well (ex. .../MapServer/0/)
+- Edit the "Where" section (defaults to 1=1) to query certain attributes, similar to how you modify the Where second on the REST HTML page
+- Select (or deselect) the query current extent, this limits your query to only data displayed within the current view
 - Query like a boss
 
-### Notes
+### TODO
 
-- ArcGIS Geo preview expects your geometry column to be called `geom`, and that it contains WGS84 geometries. See [#17](https://github.com/chriswhong/postgis-preview/pull/17) for some discussion on how to allow for other geom column names and SRIDs.
-
+- Allow exports from this tool to other formats.
+  - JSON
+  - CSV
+  - Geojson.io
