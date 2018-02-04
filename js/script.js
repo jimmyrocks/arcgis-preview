@@ -1,5 +1,5 @@
 /* global $, L, esriToGeoJSON, CodeMirror */
-(function(){
+function init (){
   'use strict';
   //initialize a leaflet map
   var map = L.map('map', {minZoom: 0, maxZoom: 21})
@@ -22,6 +22,67 @@
     submitQuery();
   });
 
+  function cloneObj(obj) {
+    return JSON.parse(JSON.stringify(obj));
+  }
+
+  function fromHash(hash) {
+    var rawHistory = {};
+    hash = hash.replace(/^#/,'');
+    var hashArray = hash.split('&');
+    hashArray.forEach(function(record) {
+      var k = record.split('=')[0];
+      var v = record.split('=')[1];
+      rawHistory[k] = decodeURIComponent(v);
+    });
+    console.log('rawHistory', rawHistory, new HistoryObject(false, rawHistory.endpoint, rawHistory.query, rawHistory.bbox));
+    return new HistoryObject(false, rawHistory.endpoint, rawHistory.query, rawHistory.bbox);
+  }
+
+  function HistoryObject(historic, endpoint, query, bbox) {
+
+    function toHash(obj) {
+      var hashArray = [];
+      for (var k in obj) {
+        if (k !== 'hash' && obj[k] !== undefined) {
+          hashArray.push(k + '=' + encodeURIComponent(obj[k]));
+        }
+      }
+      return hashArray.join('&');
+    }
+
+    var bounds;
+    endpoint = endpoint || window.endpoint.getDoc().getValue();
+    query = query || window.editor.getDoc().getValue();
+    var bboxText = window.useExtent.checked &&
+               map.getBounds()._southWest.lng + ',' +
+               map.getBounds()._southWest.lat + ',' +
+               map.getBounds()._northEast.lng + ',' +
+               map.getBounds()._northEast.lat;
+    bbox = (bbox === undefined ? bboxText : bbox);
+
+    // Convert it back to bounds
+    if (bbox !== false) {
+      bounds =  bbox.split(',');
+      bounds = [[bounds[1], bounds[0]],[bounds[3], bounds[2]]];
+    }
+
+    var history = {
+      endpoint: endpoint,
+      query: query,
+      bbox: bbox,
+      bounds: bounds
+    };
+
+    history.hash = toHash(history);
+
+    if (historic) {
+      addToHistory(cloneObj(history));
+    }
+
+    return cloneObj(history);
+  }
+
   function urlify(obj) {
     var params = [];
     for (var objName in obj) {
@@ -31,32 +92,22 @@
   }
 
   function createQueryObj(historic) {
-    var url = window.endpoint.getDoc().getValue();
-    var where = window.editor.getDoc().getValue();
-    var bbox = window.useExtent.checked &&
-               map.getBounds()._southWest.lng + ',' +
-               map.getBounds()._southWest.lat + ',' +
-               map.getBounds()._northEast.lng + ',' +
-               map.getBounds()._northEast.lat;
 
     //clear the map
     if( map.hasLayer(layer)) {
       layer.clearLayers();
     }
 
-    if (historic) {
-      addToHistory({
-        endpoint: url,
-        where: where,
-        bbox: bbox
-      });
-    }
+    // Create a new history object based on the current state of the browser
+    var historyObject = new HistoryObject(historic);
 
     //Strip the trailing slash if there is one
-    var baseUrl = url.replace(/\/{1,}(query)?(\?)?$/,'');
+    var baseUrl = historyObject.endpoint.replace(/\/{1,}(query)?(\?)?$/,'');
+    var bbox = historyObject.bbox;
     var queryObj = {
       'url': baseUrl,
-      'where':where,
+      'hash': historyObject.hash,
+      'where': historyObject.query,
       'geometry': bbox === false ? '' : bbox,
       'geometryType': 'esriGeometryEnvelope',
       'inSR':'4326',
@@ -77,7 +128,9 @@
     // pass the query to the sql api endpoint
     var queryObj = createQueryObj(true);
     var baseUrl = queryObj.url;
+    var hash = queryObj.hash;
     delete queryObj.url;
+    delete queryObj.hash;
     $.ajax({
       type: 'POST',
       dataType: 'jsonp',
@@ -106,6 +159,7 @@
         }
         $('#notifications').show();
         $('#run').removeClass('active');
+        updateHash(hash);
       },
       error: function(XMLHttpRequest, textStatus) {
         //write the error in the sidebar
@@ -145,19 +199,20 @@
     updateHistoryButtons();
   });
 
-  $('#geojson').click(function() {
-    var queryObj = createQueryObj(false);
-    queryObj.format = 'geojson';
-    var url = '/get?' + urlify(queryObj);
-    // window.open(url, '_blank');
-  });
-
-  $('#csv').click(function() {
-    var queryObj = createQueryObj(false);
-    queryObj.format = 'csv';
-    var url = '/get?' + urlify(queryObj);
-    // window.open(url, '_blank');
-  });
+  // TODO: Add export functions
+  // $('#geojson').click(function() {
+  //   var queryObj = createQueryObj(false);
+  //   queryObj.format = 'geojson';
+  //   var url = '/get?' + urlify(queryObj);
+  //   // window.open(url, '_blank');
+  // });
+  //
+  // $('#csv').click(function() {
+  //   var queryObj = createQueryObj(false);
+  //   queryObj.format = 'csv';
+  //   var url = '/get?' + urlify(queryObj);
+  //   // window.open(url, '_blank');
+  // });
 
   // initialize keyboard shortcut for submit
   $(window).keydown(function(e){
@@ -262,15 +317,16 @@
     updateHistoryButtons();
   }
 
-  function updateEntry(entry) {
-    window.endpoint.setValue(entry.endpoint);
-    window.editor.setValue(entry.where);
-    $('#useExtent').prop('checked', entry.bbox !== false);
-    window.aaa = map;
-    window.bbb = entry.bbox;
-    if (entry.bbox !== false) {
-      var bounds = entry.bbox.split(',');
-      map.fitBounds([[bounds[1], bounds[0]],[bounds[3], bounds[2]]]);
+  function updateEntry(historyObj) {
+
+    console.log('historyObj', historyObj);
+    var history = new HistoryObject(false, historyObj.endpoint, historyObj.query, historyObj.bbox);
+    console.log('history', history);
+    window.endpoint.setValue(history.endpoint);
+    window.editor.setValue(history.query);
+    $('#useExtent').prop('checked', history.bbox !== false);
+    if (history.bbox !== false) {
+      map.fitBounds(history.bounds);
     }
   }
 
@@ -289,7 +345,20 @@
     }
   }
 
-}());
+  // Hash functions
+  function readHash(hash) {
+    if (hash.length > 1) {
+      updateEntry(fromHash(hash));
+      submitQuery();
+    }
+  }
+
+  function updateHash(hash) {
+    window.location.hash = hash;
+  }
+
+  readHash(window.location.hash);
+}
 
 //Load codemirror for syntax highlighting
 window.onload = function() {
@@ -318,4 +387,7 @@ window.onload = function() {
   window.editor.setSize(null,165);
 
   window.useExtent = $('input#useExtent')[0];
+
+  // Run the scripts
+  init();
 };
