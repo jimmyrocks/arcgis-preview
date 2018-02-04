@@ -35,7 +35,6 @@ function init (){
       var v = record.split('=')[1];
       rawHistory[k] = decodeURIComponent(v);
     });
-    console.log('rawHistory', rawHistory, new HistoryObject(false, rawHistory.endpoint, rawHistory.query, rawHistory.bbox));
     return new HistoryObject(false, rawHistory.endpoint, rawHistory.query, rawHistory.bbox);
   }
 
@@ -81,14 +80,6 @@ function init (){
     }
 
     return cloneObj(history);
-  }
-
-  function urlify(obj) {
-    var params = [];
-    for (var objName in obj) {
-      params.push(encodeURIComponent(objName) + '=' + encodeURIComponent(obj[objName]));
-    }
-    return params.join('&');
   }
 
   function createQueryObj(historic) {
@@ -319,13 +310,11 @@ function init (){
 
   function updateEntry(historyObj) {
 
-    console.log('historyObj', historyObj);
     var history = new HistoryObject(false, historyObj.endpoint, historyObj.query, historyObj.bbox);
-    console.log('history', history);
     window.endpoint.setValue(history.endpoint);
     window.editor.setValue(history.query);
-    $('#useExtent').prop('checked', history.bbox !== false);
-    if (history.bbox !== false) {
+    $('#useExtent').prop('checked', history.bbox.toString() !== 'false');
+    if (history.bbox.toString() !== 'false') {
       map.fitBounds(history.bounds);
     }
   }
