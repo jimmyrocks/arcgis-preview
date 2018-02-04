@@ -73,7 +73,6 @@
     $('#notifications').hide();
     $('#download').hide();
     $('#run').addClass('active');
-    // clearTable();
 
     // pass the query to the sql api endpoint
     var queryObj = createQueryObj(true);
@@ -254,6 +253,7 @@
     //only store the last 25 queries
     if(queryHistory.length>25) {
       queryHistory.shift();
+      historyIndex--;
     }
 
     queryHistory.push(entry);
@@ -263,9 +263,15 @@
   }
 
   function updateEntry(entry) {
-    window.endpoint.setValue(entry.url);
+    window.endpoint.setValue(entry.endpoint);
     window.editor.setValue(entry.where);
-    // bbox.setValue(entry.bbox);
+    $('#useExtent').prop('checked', entry.bbox !== false);
+    window.aaa = map;
+    window.bbb = entry.bbox;
+    if (entry.bbox !== false) {
+      var bounds = entry.bbox.split(',');
+      map.fitBounds([[bounds[1], bounds[0]],[bounds[3], bounds[2]]]);
+    }
   }
 
   //enable and disable history buttons based on length of queryHistory and historyIndex
