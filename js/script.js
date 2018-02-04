@@ -73,7 +73,7 @@
     $('#notifications').hide();
     $('#download').hide();
     $('#run').addClass('active');
-    clearTable();
+    // clearTable();
 
     // pass the query to the sql api endpoint
     var queryObj = createQueryObj(true);
@@ -222,49 +222,32 @@
     $('#notifications').empty();
   }
 
-  function buildTable( features ) {
-    var viewTable = '<div id="tableWrapper"><table id="viewTable" class="table table-striped table-bordered" cellspacing="0"><thead></thead><tfoot></tfoot><tbody></tbody></table></div>';
-    $('#viewTable').remove();
-    $('#table').append(viewTable);
-    console.log('redrawing');
-    //assemble a table from the geojson properties
-
-    //first build the header row
-    var fields = Object.keys( features[0].properties );
-
-    $('#table').find('thead').append('<tr/>');
-    $('#table').find('tfoot').append('<tr/>');
-
-    fields.forEach( function( field ) {
-      $('#table').find('thead').find('tr').append('<th>' + field + '</th>');
-      $('#table').find('tfoot').find('tr').append('<th>' + field + '</th>');
-    });
-
-    features.forEach( function( feature ) {
-      //create tr with tds in memory
-      var $tr = $('<tr/>');
-
-      fields.forEach( function( field ) {
-        $tr.append('<td>' + (feature.properties[field] || '&nsbp;') + '</td>');
+  function buildTable(features) {
+    var columns = Object.keys(features[0].properties).map(function(name){return {'title': name};});
+    var rows = [];
+    features.forEach(function(feature) {
+      var row = [];
+      columns.forEach(function(column) {
+        if (feature.properties && feature.properties[column.title] !== undefined) {
+          row.push(feature.properties[column.title]);
+        } else {
+          row.push('');
+        }
       });
-
-      $('#table').find('tbody').append($tr);
+      rows.push(row);
     });
 
-    $('#viewTable>table').DataTable();
-  }
+    if ($('#data-view_filter').length) {
+      $('#data-view').DataTable().destroy();
+      $('#data-view').empty();
+    }
 
-  function clearTable() {
-    $('#viewTable').remove()
-    // $('#table').find('thead').empty();
-    // $('#table').find('tfoot').empty();
-    // $('#table').find('tbody').empty();
-    // try {
-    //   // $('#table>table').DataTable().clear();
-    // } catch (e) {
-    //   return e;
-    // }
-    // return undefined;
+    $('#data-view').DataTable( {
+      columns: columns,
+      data: rows
+    });
+
+    $('#data-view').DataTable().draw();
   }
 
   function addToHistory(entry) {
