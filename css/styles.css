@@ -6,7 +6,7 @@ html, body, #container {
 body {
   padding-top: 50px;
 }
-#map, #table, #tableWrapper {
+#map, #table {
   width: auto;
   height: 100%;
   box-shadow: 0 0 10px rgba(0,0,0,0.55);
@@ -47,9 +47,6 @@ body {
 }
 
 #table {
-  margin-right: 300px;
-}
-#tableWrapper {
   margin-right: 300px;
 }
 
