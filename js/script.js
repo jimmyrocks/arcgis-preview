@@ -13,15 +13,15 @@ function init (){
   let baseLayers = {};
   
   let cartoLayers = [
-    {'name': 'Positron', 'path': 'light_all'},
-    {'name': 'Positron (No Labels)', 'path': 'light_nolabels'},
-    {'name': 'Voyager', 'path': 'voyager_labels_under'},
-    {'name': 'Voyager (No Labels)', 'path': 'voyager_nolabels'},
-    {'name': 'DarkMatter', 'path': 'dark_labels_under'},
-    {'name': 'DarkMatter (No Labels)', 'path': 'dark_nolabels'}
+    {'name': 'Light', 'path': 'light_all'},
+    {'name': 'DarkMatter', 'path': 'dark_all'},
+    {'name': 'Light (No Labels)', 'path': 'light_nolabels'},
+    {'name': 'DarkMatter (No Labels)', 'path': 'dark_nolabels'},
+    {'name': 'Voyager', 'path': 'rastertiles/voyager'},
+    {'name': 'Voyager (No Labels)', 'path': 'rastertiles/voyager_nolabels'}
    ];
   
-  cartoLayers.forEach(layer => baseLayers['Carto ' + layer.name] = L.tileLayer(protocol + '//{s}.basemaps.cartocdn.com/rastertiles/' + layer.path + '/{z}/{x}/{y}.png', {
+  cartoLayers.forEach(layer => baseLayers['Carto ' + layer.name] = L.tileLayer(protocol + '//{s}.basemaps.cartocdn.com/' + layer.path + '/{z}/{x}/{y}.png', {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, &copy; <a href="https://carto.com/attributions">CartoD/a>'
   }));
 	  
