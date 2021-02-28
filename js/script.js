@@ -13,12 +13,12 @@ function init (){
   let baseLayers = {};
   
   let cartoLayers = [
-    {'name': 'Positron' : 'path': 'light_all},
-    {'name': 'Positron (No Labels)' : 'path': 'light_nolabels'},
-    {'name': 'Voyager' : 'path': 'voyager_labels_under'},
-    {'name': 'Voyager (No Labels)' : 'path': 'voyager_nolabels'},
-    {'name': 'DarkMatter' : 'path': 'dark_labels_under'},
-    {'name': 'DarkMatter (No Labels)' : 'path': 'dark_nolabels'},
+    {'name': 'Positron', 'path': 'light_all},
+    {'name': 'Positron (No Labels)', 'path': 'light_nolabels'},
+    {'name': 'Voyager' : 'path', 'voyager_labels_under'},
+    {'name': 'Voyager (No Labels)', 'path': 'voyager_nolabels'},
+    {'name': 'DarkMatter' : 'path', 'dark_labels_under'},
+    {'name': 'DarkMatter (No Labels)' , 'path': 'dark_nolabels'}
    ];
   
   cartoLayers.forEach(layer => baseLayers['Carto ' + layer.name] = L.tileLayer(protocol + '//{s}.basemaps.cartocdn.com/rastertiles/' + layer.path + '/{z}/{x}/{y}.png', {
