@@ -26,6 +26,8 @@ function init (){
   }));
 	  
   //Add baseLayers to map as control layers
+  // It's weird that Leaflet is assuming order in this Object, but it seems tobe set up that way
+  baseLayers[Object.keys(baseLayers)[0]'.addTo(map);
   L.control.layers(baseLayers).addTo(map);
 
 
