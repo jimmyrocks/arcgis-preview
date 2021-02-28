@@ -13,7 +13,7 @@ function init (){
   let baseLayers = {};
   
   let cartoLayers = [
-    {'name': 'Positron', 'path': 'light_all},
+    {'name': 'Positron', 'path': 'light_all'},
     {'name': 'Positron (No Labels)', 'path': 'light_nolabels'},
     {'name': 'Voyager' : 'path', 'voyager_labels_under'},
     {'name': 'Voyager (No Labels)', 'path': 'voyager_nolabels'},
