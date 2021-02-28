@@ -23,7 +23,7 @@ function init (){
   
   cartoLayers.forEach(layer => baseLayers['Carto ' + layer.name] = L.tileLayer(protocol + '//{s}.basemaps.cartocdn.com/rastertiles/' + layer.path + '/{z}/{x}/{y}.png', {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, &copy; <a href="https://carto.com/attributions">CartoD/a>'
-  });
+  }));
 	  
 	//Add baseLayers to map as control layers
 	L.control.layers(baseLayers).addTo(map);
