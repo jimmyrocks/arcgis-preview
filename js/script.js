@@ -15,9 +15,9 @@ function init (){
   let cartoLayers = [
     {'name': 'Light', 'path': 'light_all'},
     {'name': 'DarkMatter', 'path': 'dark_all'},
+    {'name': 'Voyager', 'path': 'rastertiles/voyager'},
     {'name': 'Light (No Labels)', 'path': 'light_nolabels'},
     {'name': 'DarkMatter (No Labels)', 'path': 'dark_nolabels'},
-    {'name': 'Voyager', 'path': 'rastertiles/voyager'},
     {'name': 'Voyager (No Labels)', 'path': 'rastertiles/voyager_nolabels'}
    ];
   
@@ -25,8 +25,8 @@ function init (){
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, &copy; <a href="https://carto.com/attributions">CartoD/a>'
   }));
 	  
-	//Add baseLayers to map as control layers
-	L.control.layers(baseLayers).addTo(map);
+  //Add baseLayers to map as control layers
+  L.control.layers(baseLayers).addTo(map);
 
 
   var queryHistory = (localStorage.history) ? JSON.parse(localStorage.history) : [];
