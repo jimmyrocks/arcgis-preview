@@ -3,6 +3,7 @@
   //initialize a leaflet map
   var map = L.map('map')
     .setView([40.708816,-74.008799], 11);
+  var protocol = document.location.protocol;
   
   //layer will be where we store the L.geoJSON we'll be drawing on the map
   var layer;
@@ -10,9 +11,23 @@
   var sql;
 
   //add CartoDB 'dark matter' basemap
-  L.tileLayer('http://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', {
-attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, &copy; <a href="http://cartodb.com/attributions">CartoDB</a>'
-  }).addTo(map);
+  let baseLayers = {};
+  
+  let cartoLayers = [
+    {'name': 'Positron' : 'path': 'light_all},
+    {'name': 'Positron (No Labels)' : 'path': 'light_nolabels'},
+    {'name': 'Voyager' : 'path': 'voyager_labels_under'},
+    {'name': 'Voyager (No Labels)' : 'path': 'voyager_nolabels'},
+    {'name': 'DarkMatter' : 'path': 'dark_labels_under'},
+    {'name': 'DarkMatter (No Labels)' : 'path': 'dark_nolabels'},
+   ];
+  
+  cartoLayers.forEach(layer => baseLayers['Carto ' + layer.name] = L.tileLayer(protocol + '//{s}.basemaps.cartocdn.com/rastertiles/' + layer.path + '/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, &copy; <a href="https://carto.com/attributions">CartoD/a>'
+  });
+	  
+	//Add baseLayers to map as control layers
+	L.control.layers(baseLayers).addTo(map);
 
   var queryHistory = (localStorage.history) ? JSON.parse(localStorage.history) : [];
   var historyIndex = queryHistory.length;
