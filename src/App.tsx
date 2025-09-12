@@ -171,11 +171,6 @@ export default function App() {
   const [hoverFeatureId, setHoverFeatureId] = useState<string | number | null>(null);
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | number | null>(getInitialSelectedId());
   const [isLoadingService, setIsLoadingService] = useState<boolean>(false);
-  // Keep overlay mounted briefly to allow slide-out animation on mobile
-  const [overlayMounted, setOverlayMounted] = useState<boolean>(() => {
-    try { return window.matchMedia('(max-width: 768px)').matches && sidebarOpen; } catch { return false; }
-  });
-  const closeTimerRef = useRef<number | null>(null);
   const resolvedLayer = React.useMemo(() => {
     try { return resolveEsriLayer(serviceUrl, selectedMapLayerId); } catch { return { type: null } as any; }
   }, [serviceUrl, selectedMapLayerId]);
@@ -300,18 +295,7 @@ export default function App() {
     } catch { }
   }, [theme]);
 
-  // When closing on mobile, keep overlay mounted for slide-out animation
-  useEffect(() => {
-    const isMobileNow = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
-    if (!isMobileNow) { setOverlayMounted(false); return; }
-    if (sidebarOpen) {
-      if (closeTimerRef.current) { window.clearTimeout(closeTimerRef.current); closeTimerRef.current = null; }
-      setOverlayMounted(true);
-    } else {
-      if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
-      closeTimerRef.current = window.setTimeout(() => { setOverlayMounted(false); closeTimerRef.current = null; }, 220);
-    }
-  }, [sidebarOpen, isMobile]);
+  // no overlay animation; sidebar remains side-by-side on all screen sizes
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -696,7 +680,7 @@ export default function App() {
         </div>
       </header>
       <main className="main" style={{ display: 'flex', minHeight: 0 }}>
-        <section className={`map-panel${(isMobile && overlayMounted && sidebarOpen) ? ' overlay-dim' : ''}`} style={{ display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 }}>
+        <section className={`map-panel`} style={{ display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 }}>
           <div style={{ flex: '1 1 0%', minHeight: 0, position: 'relative' }}>
             <MapView
               serviceUrl={serviceUrl}
@@ -853,33 +837,13 @@ export default function App() {
                 })()}
               />
             ) : (
-              <FlashButton className="overlay-dimmable" onClick={() => { setInfoOpen(true); }} ariaLabel="Show more info" title={'Show more info'} style={{ position: 'absolute', left: 10, bottom: 10, zIndex: 1500, padding: '8px 10px', borderRadius: 20, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <FlashButton onClick={() => { setInfoOpen(true); }} ariaLabel="Show more info" title={'Show more info'} style={{ position: 'absolute', left: 10, bottom: 10, zIndex: 1500, padding: '8px 10px', borderRadius: 20, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ display: 'inline-block', transform: 'rotate(0deg)' }}>⏵</span>
                 More Info
               </FlashButton>
             )}
           </div>
-          {/* Sidebar toggle buttons: attached to sidebar when open; bottom-right when closed */}
-          {!sidebarOpen && (
-            <FlashButton
-              onClick={() => { setSidebarOpen(true); }}
-              title={'Show sidebar'}
-              ariaLabel={'Show sidebar'}
-              style={{
-                position: 'absolute',
-                right: 13,
-                top: 140,
-                zIndex: 1500,
-                padding: '8px 10px',
-                borderRadius: 20,
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-              }}
-            >
-              <span style={{ display: 'inline-block', transform: 'rotate(180deg)' }}>⏵</span>
-            </FlashButton>
-          )}
+          {/* Sidebar open affordance handled by edge handle + swipe */}
           {/* Persistent edge handle to indicate collapsible sidebar */}
           {!sidebarOpen && (
             <button
@@ -949,7 +913,7 @@ export default function App() {
           )}
         </section>
         {/* Resizer between map and sidebar (mouse + touch) */}
-        {sidebarOpen && !isMobile && (
+        {sidebarOpen && (
           <div
             onPointerDown={(e) => {
               try { e.preventDefault(); } catch {}
@@ -1005,18 +969,9 @@ export default function App() {
             title="Drag to resize sidebar"
           />
         )}
-        {/* Mobile overlay scrim */}
-        {isMobile && overlayMounted ? (
-          <div className={`overlay-scrim${sidebarOpen ? ' is-open' : ''}`} onClick={() => setSidebarOpen(false)} aria-label="Close sidebar" />
-        ) : null}
-        {(isMobile ? overlayMounted : sidebarOpen) && (
+        {sidebarOpen && (
           <aside
-            className={isMobile ? `sidebar-overlay${sidebarOpen ? ' is-open' : ''}` : undefined}
-            style={isMobile ? (
-              { position: 'absolute', right: 0, top: 0, bottom: 0, width: '85vw', maxWidth: '90vw', minWidth: 200, borderLeft: '1px solid var(--border)', background: 'var(--panel)', padding: 12, overflow: 'auto' }
-            ) : (
-              { position: 'relative', width: sidebarWidth, borderLeft: '1px solid var(--border)', background: 'var(--panel)', padding: 12, overflow: 'auto' }
-            )}
+            style={{ position: 'relative', width: sidebarWidth, borderLeft: '1px solid var(--border)', background: 'var(--panel)', padding: 12, overflow: 'auto' }}
           >
             {/* Mobile close button */}
             <FlashButton
