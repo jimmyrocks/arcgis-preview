@@ -28,3 +28,19 @@ export function extentToBounds(ext: Extent | (Extent | null | undefined) | ({
   }
   return null;
 }
+
+// Converts Leaflet bounds to an ArcGIS-style extent in WGS84 (wkid 4326)
+export function boundsToExtent4326(b: L.LatLngBounds | null | undefined): Extent | null {
+  try {
+    if (!b || !b.isValid()) return null;
+    const sw = b.getSouthWest();
+    const ne = b.getNorthEast();
+    return {
+      xmin: sw.lng,
+      ymin: sw.lat,
+      xmax: ne.lng,
+      ymax: ne.lat,
+      spatialReference: { wkid: 4326 },
+    } as Extent;
+  } catch { return null; }
+}

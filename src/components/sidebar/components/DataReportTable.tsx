@@ -23,9 +23,11 @@ type Props = {
     rowIds?: Array<string | number | null>;
     // Field metadata for type-aware formatting
     fields?: Array<{ name: string; type: string; alias?: string; }>;
+    // Optional: total rows in the dataset (for context in header info)
+    totalInDataset?: number | null;
 };
 
-export default function DataReportTable({ data, displayFields, onRowClick, onRowHover, maxHeight = 260, displayOnLoad = false, datasetName = 'data', columnAliases, showHideButton = true, fullHeight = false, highlightId = null, rowIds = [], fields = [] }: Props) {
+export default function DataReportTable({ data, displayFields, onRowClick, onRowHover, maxHeight = 260, displayOnLoad = false, datasetName = 'data', columnAliases, showHideButton = true, fullHeight = false, highlightId = null, rowIds = [], fields = [], totalInDataset = null }: Props) {
   const [open, setOpen] = React.useState(displayOnLoad || fullHeight || showHideButton === false);
   const [sortConfig, setSortConfig] = React.useState<SortConfig>(null);
   const [searchTerm, setSearchTerm] = React.useState('');
@@ -36,6 +38,7 @@ export default function DataReportTable({ data, displayFields, onRowClick, onRow
     const sample = data?.[0] || {};
     return Object.keys(sample);
   }, [data, displayFields]);
+
 
   // Create a map of field names to their types for efficient lookup
   const fieldTypeMap = React.useMemo(() => {
@@ -116,6 +119,44 @@ export default function DataReportTable({ data, displayFields, onRowClick, onRow
     return sortConfig.direction === 'asc' ? '↑' : '↓';
   };
 
+  // Keyboard navigation over rows
+  const [selectedIndex, setSelectedIndex] = React.useState<number>(-1);
+  React.useEffect(() => {
+    if (!hasData) { setSelectedIndex(-1); return; }
+    if (highlightId == null) return;
+    try {
+      const idx = sortedData.findIndex((row) => {
+        const originalIndex = data.indexOf(row);
+        const rid = rowIds[originalIndex] != null ? rowIds[originalIndex] : (row as any)?.__id;
+        return String(rid) === String(highlightId);
+      });
+      if (idx >= 0) setSelectedIndex(idx);
+    } catch {}
+  }, [highlightId, sortedData, data, rowIds]);
+
+  function handleKeyNav(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (!hasData) return;
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Enter') return;
+    e.preventDefault();
+    let idx = selectedIndex;
+    if (e.key === 'ArrowDown') idx = Math.min(sortedData.length - 1, Math.max(0, selectedIndex + 1));
+    if (e.key === 'ArrowUp') idx = Math.max(0, selectedIndex <= 0 ? 0 : selectedIndex - 1);
+    if (e.key === 'Enter') {
+      if (idx >= 0) {
+        const originalIndex = data.indexOf(sortedData[idx]);
+        onRowClick?.(sortedData[idx], originalIndex);
+      }
+      return;
+    }
+    setSelectedIndex(idx);
+    if (idx >= 0) {
+      const originalIndex = data.indexOf(sortedData[idx]);
+      onRowHover?.(sortedData[idx], originalIndex);
+    }
+  }
+
+  // Removed copy/download actions; Download tab handles exporting
+
   return (
     <div style={{ 
       marginTop: fullHeight && showHideButton === false ? 0 : 10,
@@ -126,13 +167,14 @@ export default function DataReportTable({ data, displayFields, onRowClick, onRow
       {showHideButton !== false ? (
         <button
           onClick={() => setOpen(o => !o)}
-          style={{ padding: '6px 8px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--text)', cursor: 'pointer', marginBottom: 6 }}
+          className="u-btn"
+          style={{ marginBottom: 6 }}
         >
           {open ? `Hide ${datasetName}` : `Show ${datasetName} (${(Array.isArray(data) ? data.length : 0).toLocaleString()})`}
         </button>
       ) : null}
       {!hasData ? (
-        <div style={{ color: 'var(--muted)', fontSize: 12 }}>(no data)</div>
+        <div className="u-muted u-small">(no data)</div>
       ) : open ? (
         <div className="data-table-wrapper" style={{ 
           border: '1px solid var(--border)', 
@@ -146,7 +188,7 @@ export default function DataReportTable({ data, displayFields, onRowClick, onRow
         }}>
           {/* Table toolbar with search and info */}
           <div className="data-table-toolbar">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div className="u-row">
               <input
                 type="text"
                 placeholder={`Search ${datasetName}...`}
@@ -158,16 +200,8 @@ export default function DataReportTable({ data, displayFields, onRowClick, onRow
                 <button
                   onClick={clearSort}
                   title="Clear sort and return to original order"
-                  style={{
-                    padding: '4px 8px',
-                    fontSize: 11,
-                    borderRadius: 4,
-                    border: '1px solid var(--border)',
-                    background: 'var(--panel-subtle)',
-                    color: 'var(--muted)',
-                    cursor: 'pointer',
-                    whiteSpace: 'nowrap'
-                  }}
+                  className="u-btn"
+                  style={{ fontSize: 11, whiteSpace: 'nowrap' }}
                 >
                   Clear Sort
                 </button>
@@ -175,10 +209,15 @@ export default function DataReportTable({ data, displayFields, onRowClick, onRow
             </div>
             <div className="data-table-info">
               {filteredData.length !== data.length ? (
-                <>{filteredData.length.toLocaleString()} of {data.length.toLocaleString()} rows</>
+                <>
+                  {filteredData.length.toLocaleString()} of {data.length.toLocaleString()} rows
+                </>
               ) : (
                 <>{data.length.toLocaleString()} rows</>
               )}
+              {typeof totalInDataset === 'number' && totalInDataset > data.length ? (
+                <> ({totalInDataset.toLocaleString()} in dataset)</>
+              ) : null}
               {sortConfig && (
                 <> • sorted by {columnAliases?.[sortConfig.key] || sortConfig.key} {sortConfig.direction === 'asc' ? '↑' : '↓'}</>
               )}
@@ -186,7 +225,7 @@ export default function DataReportTable({ data, displayFields, onRowClick, onRow
           </div>
           
           {/* Scrollable table */}
-          <div ref={scrollRef} className="data-table-scroll" style={{ maxHeight: fullHeight ? 'unset' as any : maxHeight, height: fullHeight ? '100%' : undefined, flex: '1 1 0%' }}>
+          <div ref={scrollRef} tabIndex={0} onKeyDown={handleKeyNav} className="data-table-scroll" style={{ maxHeight: fullHeight ? 'unset' as any : maxHeight, height: fullHeight ? '100%' : undefined, flex: '1 1 0%' }}>
             <table className="data-table">
               <thead>
                 <tr className="data-header-row">
@@ -204,11 +243,11 @@ export default function DataReportTable({ data, displayFields, onRowClick, onRow
                 </tr>
               </thead>
               <tbody>
-                {sortedData.map((row) => {
+                {sortedData.map((row, rowIdx) => {
                   // Find original index to get correct rowId
                   const originalIndex = data.indexOf(row);
                   const rid = rowIds[originalIndex] != null ? rowIds[originalIndex] : (row as any)?.__id;
-                  const selected = isActiveRow(rid, highlightId);
+                  const selected = isActiveRow(rid, highlightId) || (rowIdx === selectedIndex);
                   const rowClass = `data-row${selected ? ' is-selected' : ''}${onRowClick ? ' is-clickable' : ''}`;
                   return (
                     <tr
@@ -282,12 +321,9 @@ function formatCell(v: any, fieldType?: string): string {
     
     // Handle regular numbers with appropriate formatting
     if (typeof v === 'number') {
-        // OID fields should not have comma formatting
-        if (fieldType === 'esrifieldtypeoid' || fieldType?.toLowerCase().includes('oid')) {
-            return String(v);
-        }
-        if (Number.isInteger(v)) return v.toLocaleString();
-        return v.toLocaleString(undefined, { maximumFractionDigits: 6 });
+        // Never use grouping to avoid 2,005 year formatting
+        if (Number.isInteger(v)) return String(v);
+        try { return new Intl.NumberFormat(undefined, { useGrouping: false, maximumFractionDigits: 6 }).format(v); } catch { return String(v); }
     }
     
     // Handle booleans

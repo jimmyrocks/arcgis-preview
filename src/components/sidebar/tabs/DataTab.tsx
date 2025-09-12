@@ -12,9 +12,10 @@ type Props = {
   onRowClick?: (id: string | number | null) => void;
   highlightId?: string | number | null;
   fields?: Array<{ name: string; type: string; alias?: string; }>;
+  layerTotal?: number | null;
 };
 
-export default function DataTab({ datasetName = 'features', columnAliases, featureCollection, onRowHover, onRowClick, highlightId, fields }: Props) {
+export default function DataTab({ datasetName = 'features', columnAliases, featureCollection, onRowHover, onRowClick, highlightId, fields, layerTotal = null }: Props) {
   const rows: Record<string, any>[] = React.useMemo(() => {
     if (!featureCollection?.features) return [];
     return featureCollection.features.map((f: any) => ({ ...(f?.properties || {}) }));
@@ -37,6 +38,7 @@ export default function DataTab({ datasetName = 'features', columnAliases, featu
         fullHeight={true}
         highlightId={highlightId}
         fields={fields}
+        totalInDataset={typeof layerTotal === 'number' ? layerTotal : null}
         onRowHover={(_row, idx) => { const id = rowIds[idx] ?? null; onRowHover?.(id as any); }}
         onRowClick={(_row, idx) => { const id = rowIds[idx] ?? null; onRowClick?.(id as any); }}
       />

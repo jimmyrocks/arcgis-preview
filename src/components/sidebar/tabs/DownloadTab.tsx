@@ -47,24 +47,34 @@ export default function DownloadTab({ rows, datasetName = 'features', featureCol
   }, [attrRows]);
   const [selectedFields, setSelectedFields] = React.useState<string[]>([]);
   const activeFields = selectedFields.length ? selectedFields : allFields;
+  // Advanced options (filenames, field filtering)
+  const defaultGeomName = React.useMemo(() => buildExportFileName(datasetName, 'on-screen', zoom, featureCount), [datasetName, zoom, featureCount]);
+  const defaultAttrName = React.useMemo(() => buildExportFileName(datasetName, 'attributes', zoom, rowCount), [datasetName, zoom, rowCount]);
+  const [geomName, setGeomName] = React.useState<string>(defaultGeomName);
+  const [attrName, setAttrName] = React.useState<string>(defaultAttrName);
+  const [geomNameDirty, setGeomNameDirty] = React.useState<boolean>(false);
+  const [attrNameDirty, setAttrNameDirty] = React.useState<boolean>(false);
+  const [includeSelectedInGeom, setIncludeSelectedInGeom] = React.useState<boolean>(false);
+  React.useEffect(() => { if (!geomNameDirty) setGeomName(defaultGeomName); }, [defaultGeomName, geomNameDirty]);
+  React.useEffect(() => { if (!attrNameDirty) setAttrName(defaultAttrName); }, [defaultAttrName, attrNameDirty]);
 
   React.useEffect(() => {
     let cancelled = false;
-    async function loadCount() {
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
       setLoadingCount(true);
       try {
         const layerUrl = resolveLayerUrl(serviceUrl, layerId);
         if (isPoint && layerUrl && bbox) {
-          const n = await fetchFeatureCountInExtent(layerUrl, bbox, whereValue);
+          const n = await fetchFeatureCountInExtent(layerUrl, bbox, whereValue, { signal: controller.signal });
           if (!cancelled) setTotalInView(n);
         } else {
           if (!cancelled) setTotalInView(null);
         }
       } catch { if (!cancelled) setTotalInView(null); }
       finally { if (!cancelled) setLoadingCount(false); }
-    }
-    loadCount();
-    return () => { cancelled = true; };
+    }, 200); // debounce
+    return () => { cancelled = true; try { controller.abort(); } catch {}; window.clearTimeout(timer); };
   }, [serviceUrl, layerId, whereValue, bbox, isPoint]);
 
   const readiness = React.useMemo(() => {
@@ -107,10 +117,22 @@ export default function DownloadTab({ rows, datasetName = 'features', featureCol
   function downloadGeometry() {
     if (!hasGeom) return;
     const out = filterFeatureCollectionByRowIds(featureCollection, rows || []);
+    try {
+      if (includeSelectedInGeom && selectedFields.length > 0) {
+        const keep = new Set(activeFields);
+        const feats = Array.isArray((out as any)?.features) ? (out as any).features : [];
+        for (const f of feats) {
+          const props = (f && f.properties) || {};
+          const next: any = {};
+          keep.forEach(k => { next[k] = props[k]; });
+          f.properties = next;
+        }
+      }
+    } catch {}
     const meta = buildExportMeta({
       exportType: 'on-screen', geometryType, zoom, bbox, where: whereValue, rendered: featureCount, totalInView: totalInView ?? undefined, tolerance: tolerance.range || undefined, serviceUrl, layerId, crs: spatialWkid,
     });
-    const name = buildExportFileName(datasetName, 'on-screen', zoom, featureCount);
+    const name = geomName || defaultGeomName;
     if (geomFormat === 'kml') {
       const kml = featureCollectionToKml(out, { name: datasetName, metaJson: JSON.stringify(meta), renderer, geometryType, inlineIcons: false });
       downloadText(`${name}.kml`, 'application/vnd.google-earth.kml+xml', kml);
@@ -129,13 +151,23 @@ export default function DownloadTab({ rows, datasetName = 'features', featureCol
     try {
       if (!hasGeom || featureCount === 0 || geomFormat !== 'geojson') return '';
       const out = filterFeatureCollectionByRowIds(featureCollection, rows || []);
+      if (includeSelectedInGeom && selectedFields.length > 0) {
+        const keep = new Set(activeFields);
+        const feats = Array.isArray((out as any)?.features) ? (out as any).features : [];
+        for (const f of feats) {
+          const props = (f && f.properties) || {};
+          const next: any = {};
+          keep.forEach(k => { next[k] = props[k]; });
+          f.properties = next;
+        }
+      }
       const meta = buildExportMeta({
         exportType: 'on-screen', geometryType, zoom, bbox, where: whereValue, rendered: featureCount, totalInView: totalInView ?? undefined, tolerance: tolerance.range || undefined, serviceUrl, layerId, crs: spatialWkid,
       });
       try { (out as any)._export_meta = meta; } catch {}
       return JSON.stringify(out);
     } catch { return ''; }
-  }, [hasGeom, featureCount, geomFormat, featureCollection, rows, geometryType, zoom, bbox, whereValue, totalInView, tolerance.range, serviceUrl, layerId, spatialWkid]);
+  }, [hasGeom, featureCount, geomFormat, featureCollection, rows, geometryType, zoom, bbox, whereValue, totalInView, tolerance.range, serviceUrl, layerId, spatialWkid, includeSelectedInGeom, activeFields, selectedFields.length]);
 
   const geojsonIoUrl = React.useMemo(() => {
     try {
@@ -143,6 +175,14 @@ export default function DownloadTab({ rows, datasetName = 'features', featureCol
       return `https://geojson.io/#data=data:application/json,${encodeURIComponent(geojsonCopyText)}`;
     } catch { return ''; }
   }, [geojsonCopyText]);
+
+  // Disable geojson.io link if the URL becomes excessively long
+  const GEOJSON_IO_MAX_URL = 1048576; // lets limit it to 1mb
+  const geojsonIoTooLong = React.useMemo(() => {
+    try { return (geojsonIoUrl || '').length > GEOJSON_IO_MAX_URL; } catch { return true; }
+  }, [geojsonIoUrl]);
+
+  // (External viewers removed; keep only geojson.io support)
 
   const attributesCopyText = React.useMemo(() => {
     try {
@@ -168,7 +208,7 @@ export default function DownloadTab({ rows, datasetName = 'features', featureCol
     const meta = buildExportMeta({
       exportType: 'attributes', geometryType, zoom, bbox, where: whereValue, rendered: rowCount, totalInView: totalInView ?? undefined, tolerance: tolerance.range || undefined, serviceUrl, layerId, crs: spatialWkid,
     });
-    const name = buildExportFileName(datasetName, 'attributes', zoom, rowCount);
+    const name = attrName || defaultAttrName;
     if (attrFormat === 'json') {
       const rowsOut = (attrRows || []).map((r: any) => {
         if (!activeFields.length) return r;
@@ -193,6 +233,31 @@ export default function DownloadTab({ rows, datasetName = 'features', featureCol
     const total = (isPoint && totalInView != null) ? totalInView : layerTotal;
     showExportToast(color, rowCount, total);
   }
+
+  // Micro copy chips content
+  const attributesCsvText = React.useMemo(() => {
+    try {
+      const rowsOut = (attrRows || []).map((r: any) => {
+        if (!activeFields.length) return r;
+        const out: any = {};
+        activeFields.forEach(k => { out[k] = r[k]; });
+        return out;
+      });
+      return toCSV(rowsOut || []);
+    } catch { return ''; }
+  }, [attrRows, activeFields]);
+  const attributesJsonQuick = React.useMemo(() => {
+    try {
+      const rowsOut = (attrRows || []).map((r: any) => {
+        if (!activeFields.length) return r;
+        const out: any = {};
+        activeFields.forEach(k => { out[k] = r[k]; });
+        return out;
+      });
+      const payload = { rows: rowsOut };
+      return JSON.stringify(payload);
+    } catch { return ''; }
+  }, [attrRows, activeFields]);
 
   const totalForGeo = ((): number | null => {
     if (typeof layerTotal === 'number') return layerTotal;
@@ -256,143 +321,99 @@ export default function DownloadTab({ rows, datasetName = 'features', featureCol
 
   return (
     <div style={{ display: 'grid', gap: 10 }}>
-      <div style={{ color: 'var(--muted)', fontSize: 12 }}>Download current data</div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <small style={{ color: 'var(--muted)' }}>Quick Copy:</small>
+      <div className="u-muted u-small">Download current data</div>
+      {/* Quick copy row */}
+      <div className="u-row" style={{ flexWrap: 'wrap' as any }}>
+        <small className="u-muted">Quick Copy:</small>
         <CopyButton text={bbox || ''} />
-        <span style={{ color: 'var(--muted)' }}>BBox</span>
+        <span className="u-muted">BBox</span>
         <CopyButton text={center || ''} />
-        <span style={{ color: 'var(--muted)' }}>Center</span>
+        <span className="u-muted">Center</span>
         <CopyButton text={queryUrlQuick || ''} />
-        <span style={{ color: 'var(--muted)' }}>Query URL</span>
+        <span className="u-muted">Query URL</span>
       </div>
-      <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
-        <table className="data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, tableLayout: 'fixed' }}>
-          <colgroup>
-            {/* Label/format column (even smaller) */}
-            <col style={{ width: '20%' }} />
-            {/* Count (narrow, right aligned) */}
-            <col style={{ width: '12%' }} />
-            {/* Status (extra room for wrapping) */}
-            <col style={{ width: '44%' }} />
-            {/* Action (wider for stacked controls) */}
-            <col style={{ width: '24%' }} />
-          </colgroup>
-          <thead>
-            <tr style={{ background: 'var(--panel-strong)' }}>
-              {/* Format label removed per UX simplification */}
-              <th style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)' }}></th>
-              <th style={{ textAlign: 'right', padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>Count</th>
-              <th style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>Status</th>
-              <th style={{ textAlign: 'right', padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--divider-weak)', whiteSpace: 'normal' }}>
-                Attributes + Geospatial
-                <div style={{ marginTop: 6 }}>
-                  
-                  <select value={geomFormat} onChange={(e) => setGeomFormat((e.target.value as any) || 'geojson')} style={{ padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--text)' }}>
-                    <option value="geojson">GeoJSON</option>
-                    <option value="kml">KML</option>
-                    <option value="kmz">KMZ</option>
-                  </select>
-                  {/* Copy + geojson.io moved to Action column */}
-                </div>
-              </td>
-              <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--divider-weak)', textAlign: 'right', whiteSpace: 'normal' }}>
-                {hasGeom ? (
-                  <div style={{ whiteSpace: 'normal' }}>
-                    <div>
-                      {fmtCount(featureCount, totalForGeo)}
-                    </div>
-                  </div>
-                ) : '—'}
-              </td>
-              <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--divider-weak)', color: 'var(--text)' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
-                  <ReadinessBadge color={readiness.color} label={readiness.label} />
-                  <div style={{ color: 'var(--muted)', whiteSpace: 'normal' }}>
-                    Geometry is simplified for display purposes, use{' '}
-                    <a href="https://geodatadownloader.com" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                      <span>geodatadownloader.com</span>
-                      <span aria-hidden="true" style={{ fontSize: 12 }}>↗</span>
-                    </a>
-                    {' '}for full precision.
-                  </div>
-                  {readiness.color === 'red' && storedRange ? (
-                    <div style={{ color: 'var(--muted)', whiteSpace: 'normal' }}>Stored precision range: ~{storedRange.min}–~{storedRange.max} m</div>
-                  ) : null}
-                  {statusDetailGeo ? (
-                    <div style={{ color: 'var(--muted)', whiteSpace: 'normal' }}>{statusDetailGeo}</div>
-                  ) : null}
-                </div>
-              </td>
-              <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--divider-weak)' }}>
-                <div style={{ display: 'grid', justifyItems: 'stretch', gap: 6 }}>
-                  <button
-                    onClick={downloadGeometry}
-                    disabled={!hasGeom || featureCount === 0}
-                    title={!hasGeom || featureCount === 0 ? 'No features in view.' : undefined}
-                    style={{ width: '100%', padding: '8px 10px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--text)', cursor: (!hasGeom || featureCount === 0) ? 'not-allowed' : 'pointer' }}
-                  >
-                    ⬇️ Download
-                  </button>
-                  {geomFormat === 'geojson' && hasGeom && featureCount > 0 ? (
-                    <>
-                      <span title="Copy GeoJSON to clipboard" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                        <CopyButton text={geojsonCopyText} />
-                        <span style={{ color: 'var(--muted)', fontSize: 12 }}>Copy GeoJSON</span>
-                      </span>
-                      <a href={geojsonIoUrl || '#'} target="_blank" rel="noreferrer" title="Open at geojson.io (external site)" style={{ color: 'var(--accent)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                        <span>geojson.io</span>
-                        <span aria-hidden="true" style={{ fontSize: 12 }}>↗</span>
-                      </a>
-                    </>
-                  ) : null}
-                </div>
-                {featureCount > 10000 ? (
-                  <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 4 }}>Large export; may be slow to download.</div>
-                ) : null}
-              </td>
-            </tr>
-            <tr>
-              <td style={{ padding: '6px 8px', whiteSpace: 'normal' }}>
-                Attributes
-                <div style={{ marginTop: 6 }}>
-                  
-                  <select value={attrFormat} onChange={(e) => setAttrFormat((e.target.value as any) || 'csv')} style={{ padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--text)' }}>
-                    <option value="csv">CSV</option>
-                    <option value="json">JSON</option>
-                  </select>
-                  {/* Copy button moved to Action column */}
-                </div>
-              </td>
-              <td style={{ padding: '6px 8px', textAlign: 'right', whiteSpace: 'normal' }}>
-                <div style={{ whiteSpace: 'normal' }}>{fmtCount(rowCount, typeof layerTotal === 'number' ? layerTotal : null)}</div>
-              </td>
-              <td style={{ padding: '6px 8px', color: 'var(--text)' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
-                  <ReadinessBadge color={attrReadiness.color} label={attrReadiness.label} />
-                  <span style={{ color: 'var(--muted)', whiteSpace: 'normal' }}>{statusDetailAttr}</span>
-                </div>
-              </td>
-              <td style={{ padding: '6px 8px' }}>
-                <div style={{ display: 'grid', justifyItems: 'stretch', gap: 6 }}>
-                  <button onClick={downloadAttributes} disabled={!rowCount} title={!rowCount ? 'No attributes in view.' : undefined} style={{ width: '100%', padding: '8px 10px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--text)', cursor: rowCount ? 'pointer' : 'not-allowed' }}>⬇️ Download</button>
-                  {rowCount > 0 ? (
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }} title={`Copy ${attrFormat.toUpperCase()} to clipboard`}>
-                      <CopyButton text={attributesCopyText} />
-                      <span style={{ color: 'var(--muted)', fontSize: 12 }}>Copy {attrFormat.toUpperCase()}</span>
-                    </span>
-                  ) : null}
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+
+      {/* Geometry + Attributes card */}
+      <section className="export-card">
+        <header className="export-card-head">
+          <div className="export-card-title">On-screen features</div>
+          <ReadinessBadge color={readiness.color} label={readiness.label} />
+        </header>
+        <div className="export-card-row">
+          <label className="u-muted" htmlFor="geom-format">Format</label>
+          <select id="geom-format" value={geomFormat} onChange={(e) => setGeomFormat((e.target.value as any) || 'geojson')} className="u-input" style={{ width: 'auto' }}>
+            <option value="geojson">GeoJSON</option>
+            <option value="kml">KML</option>
+            <option value="kmz">KMZ</option>
+          </select>
+        </div>
+        <div className="export-card-row">
+          <span className="u-muted">Count</span>
+          <strong aria-live="polite">{hasGeom ? fmtCount(featureCount, totalForGeo) : '—'}</strong>
+        </div>
+        <div className="export-card-note">
+          <span className="u-note">Geometry is simplified for display purposes, use <a href="https://geodatadownloader.com" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)', textDecoration: 'none' }}>geodatadownloader.com</a> for full precision.</span>
+          {readiness.color === 'red' && storedRange ? (
+            <span className="u-note">Stored precision range: ~{storedRange.min}–~{storedRange.max} m</span>
+          ) : null}
+          {statusDetailGeo ? (<span className="u-note">{statusDetailGeo}</span>) : null}
+        </div>
+        <div className="export-card-actions">
+          <button onClick={downloadGeometry} disabled={!hasGeom || featureCount === 0} title={!hasGeom || featureCount === 0 ? 'No features in view.' : undefined} className="u-btn" style={{ width: '100%' }}>⬇️ Download</button>
+          {geomFormat === 'geojson' && hasGeom && featureCount > 0 ? (
+            <div className="u-row" style={{ justifyContent: 'space-between', flexWrap: 'wrap' as any }}>
+              <span className="u-row" title="Copy GeoJSON to clipboard">
+                <CopyButton text={geojsonCopyText} />
+                <span className="u-muted u-small">Copy GeoJSON</span>
+              </span>
+              <span className="u-row" style={{ gap: 10 }}>
+                <span className="u-muted u-small">Open in:</span>
+                {geojsonIoTooLong ? (
+                  <span title="URL too long for geojson.io" className="u-row u-muted" style={{ textDecoration: 'none', cursor: 'not-allowed' }}>
+                    <span>geojson.io</span>
+                    <span aria-hidden="true" className="u-small">⚠</span>
+                  </span>
+                ) : (
+                  <a href={geojsonIoUrl || '#'} target="_blank" rel="noreferrer" title="Open at geojson.io" style={{ color: 'var(--accent)', textDecoration: 'none' }}>geojson.io ↗</a>
+                )}
+              </span>
+            </div>
+          ) : null}
+          {featureCount > 10000 ? (<div className="u-note" style={{ marginTop: 4 }}>Large export; may be slow to download.</div>) : null}
+
+          </div>
+      </section>
+
+      {/* Attributes only card */}
+      <section className="export-card">
+        <header className="export-card-head">
+          <div className="export-card-title">Attributes only</div>
+          <ReadinessBadge color={attrReadiness.color} label={attrReadiness.label} />
+        </header>
+        <div className="export-card-row">
+          <label className="u-muted" htmlFor="attr-format">Format</label>
+          <select id="attr-format" value={attrFormat} onChange={(e) => setAttrFormat((e.target.value as any) || 'csv')} className="u-input" style={{ width: 'auto' }}>
+            <option value="csv">CSV</option>
+            <option value="json">JSON</option>
+          </select>
+        </div>
+        <div className="export-card-row">
+          <span className="u-muted">Count</span>
+          <strong aria-live="polite">{fmtCount(rowCount, typeof layerTotal === 'number' ? layerTotal : null)}</strong>
+        </div>
+        <div className="export-card-note">
+          {statusDetailAttr ? (<span className="u-note">{statusDetailAttr}</span>) : null}
+        </div>
+        <div className="export-card-actions">
+          <button onClick={downloadAttributes} disabled={!rowCount} title={!rowCount ? 'No attributes in view.' : undefined} className="u-btn" style={{ width: '100%' }}>⬇️ Download</button>
+          {rowCount > 0 ? (
+            <span className="u-row" title={`Copy ${attrFormat.toUpperCase()} to clipboard`}>
+              <CopyButton text={attributesCopyText} />
+              <span className="u-muted u-small">Copy {attrFormat.toUpperCase()}</span>
+            </span>
+          ) : null}
+        </div>
+      </section>
     </div>
   );
 }

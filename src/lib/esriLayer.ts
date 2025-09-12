@@ -1,6 +1,7 @@
 import { getRestServiceUrlInfo } from './arcgis';
 import { log } from './log';
 import type { MapServiceInfo, MapServiceLayerInfo } from './types/arcgis-rest';
+import { CACHE_TTLS } from './config';
 import type { Extent } from './types/arcgis-rest';
 
 export type ResolvedLayer = {
@@ -41,31 +42,31 @@ export function resolveEsriLayer(serviceUrl: string, selectedMapLayerId?: number
   }
 }
 
-export async function fetchServiceMetadata(serviceRootUrl: string): Promise<MapServiceInfo> {
+export async function fetchServiceMetadata(serviceRootUrl: string, opts?: { signal?: AbortSignal; ttlMs?: number }): Promise<MapServiceInfo> {
   const url = new URL(serviceRootUrl);
   url.searchParams.set('f', 'json');
-  return fetchJsonCached<MapServiceInfo>(url.toString());
+  return fetchJsonCached<MapServiceInfo>(url.toString(), { signal: opts?.signal, ttlMs: opts?.ttlMs ?? CACHE_TTLS.metadataMs });
 }
 
-export async function fetchLayerMetadata(layerUrl: string): Promise<MapServiceLayerInfo> {
+export async function fetchLayerMetadata(layerUrl: string, opts?: { signal?: AbortSignal; ttlMs?: number }): Promise<MapServiceLayerInfo> {
   const url = new URL(layerUrl);
   url.searchParams.set('f', 'json');
-  return fetchJsonCached<MapServiceLayerInfo>(url.toString());
+  return fetchJsonCached<MapServiceLayerInfo>(url.toString(), { signal: opts?.signal, ttlMs: opts?.ttlMs ?? CACHE_TTLS.metadataMs });
 }
 
-export async function fetchFeatureCount(layerUrl: string, where?: string): Promise<number> {
+export async function fetchFeatureCount(layerUrl: string, where?: string, opts?: { signal?: AbortSignal }): Promise<number> {
   const url = new URL(`${layerUrl.replace(/\/+$/, '')}/query`);
   url.searchParams.set('f', 'json');
   url.searchParams.set('returnCountOnly', 'true');
   url.searchParams.set('where', (where && where.trim()) || '1=1');
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: opts?.signal });
   if (!res.ok) throw new Error(`Failed to load feature count: ${res.status}`);
   const json = await res.json();
   const n = typeof json?.count === 'number' ? json.count : (typeof json?.featureCount === 'number' ? json.featureCount : 0);
   return n;
 }
 
-export async function fetchFeatureCountInExtent(layerUrl: string, bbox4326: string, where?: string): Promise<number> {
+export async function fetchFeatureCountInExtent(layerUrl: string, bbox4326: string, where?: string, opts?: { signal?: AbortSignal }): Promise<number> {
   // bbox4326: "minX, minY, maxX, maxY" in WGS84
   const url = new URL(`${layerUrl.replace(/\/+$/, '')}/query`);
   url.searchParams.set('f', 'json');
@@ -75,7 +76,7 @@ export async function fetchFeatureCountInExtent(layerUrl: string, bbox4326: stri
   url.searchParams.set('geometryType', 'esriGeometryEnvelope');
   url.searchParams.set('inSR', '4326');
   url.searchParams.set('spatialRel', 'esriSpatialRelIntersects');
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: opts?.signal });
   if (!res.ok) throw new Error(`Failed to load feature count in extent: ${res.status}`);
   const json = await res.json();
   const n = typeof json?.count === 'number' ? json.count : (typeof json?.featureCount === 'number' ? json.featureCount : 0);
@@ -104,14 +105,14 @@ export function summarizeService(meta: MapServiceInfo, layerId: number | undefin
   return `${title} — ${total} layers/tables`;
 }
 
-export async function fetchFeatureAttributes(layerUrl: string, where?: string, limit: number = 100): Promise<any[]> {
+export async function fetchFeatureAttributes(layerUrl: string, where?: string, limit: number = 100, opts?: { signal?: AbortSignal }): Promise<any[]> {
   const url = new URL(`${layerUrl.replace(/\/+$/, '')}/query`);
   url.searchParams.set('f', 'json');
   url.searchParams.set('where', (where && where.trim()) || '1=1');
   url.searchParams.set('outFields', '*');
   url.searchParams.set('returnGeometry', 'false');
   url.searchParams.set('resultRecordCount', String(limit));
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: opts?.signal });
   if (!res.ok) throw new Error(`Failed to load features: ${res.status}`);
   const json = await res.json();
   const feats = Array.isArray(json?.features) ? json.features : [];
@@ -119,7 +120,7 @@ export async function fetchFeatureAttributes(layerUrl: string, where?: string, l
 }
 
 // Fetch only the extent for a layer, reprojected to WGS84 (EPSG:4326)
-export async function fetchLayerExtent4326(layerUrl: string, where: string = '1=1'): Promise<Extent | null> {
+export async function fetchLayerExtent4326(layerUrl: string, where: string = '1=1', opts?: { signal?: AbortSignal; ttlMs?: number }): Promise<Extent | null> {
   try {
     const url = new URL(`${layerUrl.replace(/\/+$/, '')}/query`);
     url.searchParams.set('f', 'json');
@@ -128,27 +129,51 @@ export async function fetchLayerExtent4326(layerUrl: string, where: string = '1=
     url.searchParams.set('returnGeometry', 'false');
     url.searchParams.set('outSR', '4326');
     // Use cached fetch to debounce duplicate requests
-    const json = await fetchJsonCached<any>(url.toString());
+    const json = await fetchJsonCached<any>(url.toString(), { signal: opts?.signal, ttlMs: opts?.ttlMs ?? CACHE_TTLS.extentMs });
     const ext = (json && (json.extent || json?.fullExtent || json?.initialExtent)) || null;
     if (ext && typeof ext.xmin === 'number' && typeof ext.ymin === 'number' && typeof ext.xmax === 'number' && typeof ext.ymax === 'number') return ext as Extent;
     return null;
   } catch { return null; }
 }
 
-// ---- Simple in-memory fetch cache for JSON GET requests ----
-const jsonCache = new Map<string, Promise<any>>();
+// ---- In-memory fetch cache with basic ETag/Last-Modified revalidation ----
+type CacheEntry = { data: any; etag?: string | null; lastModified?: string | null; timestamp: number };
+const jsonCache = new Map<string, CacheEntry>();
+const inflight = new Map<string, Promise<any>>();
 
-async function fetchJsonCached<T = any>(url: string): Promise<T> {
+async function fetchJsonCached<T = any>(url: string, opt?: { signal?: AbortSignal; ttlMs?: number }): Promise<T> {
   const key = normalizeCacheKey(url);
-  const existing = jsonCache.get(key);
-  if (existing) return existing as Promise<T>;
+  const now = Date.now();
+  const ttl = typeof opt?.ttlMs === 'number' ? opt!.ttlMs! : 5 * 60 * 1000; // default 5 minutes
+
+  // Coalesce concurrent requests
+  const inFlight = inflight.get(key);
+  if (inFlight) return inFlight as Promise<T>;
+
+  const cached = jsonCache.get(key);
+  if (cached && (now - cached.timestamp) < ttl) {
+    return cached.data as T;
+  }
+
   const p = (async () => {
-    const res = await fetch(url);
+    const headers: Record<string, string> = {};
+    if (cached?.etag) headers['If-None-Match'] = cached.etag;
+    if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
+    const res = await fetch(url, { headers, signal: opt?.signal });
+    if (res.status === 304 && cached) {
+      // Not modified; refresh timestamp
+      cached.timestamp = now;
+      return cached.data as T;
+    }
     if (!res.ok) throw new Error(`Failed to fetch: ${res.status}`);
-    return res.json();
+    const data = await res.json();
+    const etag = res.headers.get('ETag');
+    const lastModified = res.headers.get('Last-Modified');
+    jsonCache.set(key, { data, etag, lastModified, timestamp: now });
+    return data as T;
   })();
-  jsonCache.set(key, p);
-  try { return await p; } finally { /* keep fulfilled promise in cache */ }
+  inflight.set(key, p);
+  try { return await p; } finally { inflight.delete(key); }
 }
 
 function normalizeCacheKey(url: string): string {

@@ -70,7 +70,8 @@ export default function EsriDynamicLayer({ url, serviceMeta, onStatusChange, onC
         try {
           if (typeof onlyLayerId === 'number' && !extentFetchRef.current) {
             extentFetchRef.current = true;
-            const ext = await fetchLayerExtent4326(`${url.replace(/\/+$/, '')}/${onlyLayerId}`);
+            const controller = new AbortController();
+            const ext = await fetchLayerExtent4326(`${url.replace(/\/+$/, '')}/${onlyLayerId}`, '1=1', { signal: controller.signal });
             const b2 = ext ? extentToBounds(ext as any) : null;
             if (b2) {
               onComputedBounds?.(b2);

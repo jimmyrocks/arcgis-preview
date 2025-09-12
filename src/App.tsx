@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ToastContainer, ToastOptions, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import MapView from './components/MapView';
+import ErrorBoundary from './components/ErrorBoundary';
 import { beautifyWhere, validateWhere } from './lib/whereUtils';
 import WhereEditor from './components/WhereEditor';
 import type { Extent } from './lib/types/arcgis-rest';
@@ -10,6 +11,7 @@ import MoreInfoOverlay from './components/MoreInfoOverlay';
 import Sidebar from './components/sidebar/components/Sidebar';
 import type { GeometryStyleOptions } from './lib/styleOptions';
 import { defaultStyleOptions } from './lib/styleOptions';
+import { GITHUB_REPO_URL } from './lib/links';
 import type { MapServiceInfo, MapServiceLayerInfo } from './lib/types/arcgis-rest';
 import { resolveEsriLayer, fetchLayerMetadata, fetchFeatureCount } from './lib/esriLayer';
 
@@ -72,8 +74,8 @@ function parseCenterParam(): { center: [number, number] | null; zoom: number | n
   } catch { return { center: null, zoom: null }; }
 }
 
-function getInitialBasemap(): 'usgs_topo' | 'usgs_imagery_topo' | 'usgs_imagery' | 'osm' | 'carto_positron' | 'carto_dark' {
-  const allowed = new Set(['usgs_topo', 'usgs_imagery_topo', 'usgs_imagery', 'osm', 'carto_positron', 'carto_dark']);
+function getInitialBasemap(): 'usgs_topo' | 'usgs_imagery_topo' | 'usgs_imagery' | 'osm' | 'carto_positron' | 'carto_dark' | 'carto_voyager' | 'esri_worldimagery' | 'opentopomap' {
+  const allowed = new Set(['usgs_topo', 'usgs_imagery_topo', 'usgs_imagery', 'osm', 'carto_positron', 'carto_dark', 'carto_voyager', 'esri_worldimagery', 'opentopomap']);
   try {
     const v = new URLSearchParams(location.search).get('basemap') || '';
     const key = v.toLowerCase();
@@ -167,16 +169,19 @@ export default function App() {
   const [layerDataRows, setLayerDataRows] = useState<any[]>([]);
   const [featureCollection, setFeatureCollection] = useState<any>({ type: 'FeatureCollection', features: [] });
   const [renderMode, setRenderMode] = useState<'feature' | 'dynamic' | 'fallback_dynamic'>('feature');
+  const [downloadedExtent, setDownloadedExtent] = useState<Extent | null>(null);
   const [fallbackReason, setFallbackReason] = useState<string | undefined>(undefined);
   const [hoverFeatureId, setHoverFeatureId] = useState<string | number | null>(null);
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | number | null>(getInitialSelectedId());
   const [isLoadingService, setIsLoadingService] = useState<boolean>(false);
+  const metaControllerRef = React.useRef<AbortController | null>(null);
   const resolvedLayer = React.useMemo(() => {
     try { return resolveEsriLayer(serviceUrl, selectedMapLayerId); } catch { return { type: null } as any; }
   }, [serviceUrl, selectedMapLayerId]);
   const isFeatureLayer = (resolvedLayer as any)?.type === 'feature';
   const [where, setWhere] = useState<string>(getInitialWhere());
   const [whereInput, setWhereInput] = useState<string>(getInitialWhere());
+  const whereInputDebounceRef = useRef<any>(null);
   const layerErrorGateRef = useRef<{ url: string; last: number }>({ url: '', last: 0 });
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
     const stored = Number(localStorage.getItem('sidebarWidth') || '0');
@@ -202,7 +207,7 @@ export default function App() {
   // Header "server list" info popover state
   const [showServerList, setShowServerList] = useState<boolean>(false);
   const serverListRef = React.useRef<HTMLDivElement | null>(null);
-  const [basemap, setBasemap] = useState<'usgs_topo' | 'usgs_imagery_topo' | 'usgs_imagery' | 'osm' | 'carto_positron' | 'carto_dark'>(getInitialBasemap());
+  const [basemap, setBasemap] = useState<any>(getInitialBasemap());
   const [activeTab, setActiveTab] = useState<'select' | 'details' | 'query' | 'data' | 'download' | 'style'>(getInitialTab());
   // Sidebar resize interaction is handled with transient listeners; no state needed
   const toastSeenRef = useRef<Map<string, number>>(new Map());
@@ -219,6 +224,8 @@ export default function App() {
       toast(msg, { autoClose: 1400, ...options });
     } catch { }
   };
+
+  // (Removed) Service Worker registration for share links no longer needed
 
   // Build samples for autocomplete in header WHERE editor
   const fieldsWithAliases = React.useMemo(() => {
@@ -504,6 +511,7 @@ export default function App() {
       setWhere('1=1');
       setWhereInput('1=1');
     } catch {}
+    try { setDownloadedExtent(null); } catch {}
   }, [serviceUrl]);
 
   // Table is disabled for now while map UX is refined
@@ -511,7 +519,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="header" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', width: '100%' }}>
+        <div style={{ display: 'flex', gap: isMobile ? 8 : 12, alignItems: 'center', width: '100%' }}>
           <h1 style={{ margin: 0, marginRight: 8 }}>ArcGIS Preview</h1>
           <div style={{ position: 'relative', flex: '1 1 auto' }}>
             <input
@@ -522,8 +530,8 @@ export default function App() {
               placeholder={defaultPlaceholder}
               style={{ 
                 width: '100%',
-                padding: '10px 14px', 
-                fontSize: 18, 
+                padding: isMobile ? '8px 10px' : '10px 14px',
+                fontSize: isMobile ? 14 : 18,
                 borderRadius: 8, 
                 border: '1px solid var(--border)', 
                 background: 'var(--panel-subtle)', 
@@ -600,13 +608,16 @@ export default function App() {
           </div>
           {/* URL applies on Enter/blur; filter controls below */}
         </div>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', width: '100%' }}>
-          <div style={{ fontSize: 12, color: 'var(--muted)', minWidth: 80 }}>Filter (WHERE)</div>
+        <div style={{ display: 'flex', gap: isMobile ? 8 : 12, alignItems: 'center', width: '100%' }}>
+          {isMobile ? null : <div style={{ fontSize: 12, color: 'var(--muted)', minWidth: 80 }}>Filter (WHERE)</div>}
           <div style={{ position: 'relative', flex: 1 }}>
           <WhereEditor
             aria-label="Filter (WHERE)"
             value={whereInput}
-            onChange={(v) => setWhereInput(v)}
+            onChange={(v: string) => {
+              try { if (whereInputDebounceRef.current) clearTimeout(whereInputDebounceRef.current); } catch {}
+              whereInputDebounceRef.current = setTimeout(() => { setWhereInput(v); }, 120);
+            }}
             onCommit={commitWhere}
             placeholder="1=1"
             fields={fieldNames}
@@ -683,24 +694,57 @@ export default function App() {
               ⚠️ Rendering fell back to Dynamic. Filter may be invalid. Click to reset.
             </div>
           ) : null}
-          <FlashButton onClick={() => { commitWhere(); showToast('Query Updated'); }}>🔄 Update Query</FlashButton>
-          <FlashButton onClick={() => { setWhere('1=1'); setWhereInput('1=1'); setLayerDataRows([]); showToast('Reset filter'); }}>♻️ Reset</FlashButton>
+          <FlashButton
+            className="action-btn"
+            style={isMobile ? { padding: '6px 8px', fontSize: 12 } : undefined}
+            onClick={() => { commitWhere(); showToast('Query Updated'); }}
+          >
+            {isMobile ? '🔄' : '🔄 Update Query'}
+          </FlashButton>
+          <FlashButton
+            className="action-btn"
+            style={isMobile ? { padding: '6px 8px', fontSize: 12 } : undefined}
+            onClick={() => { setWhere('1=1'); setWhereInput('1=1'); setLayerDataRows([]); showToast('Reset filter'); }}
+          >
+            {isMobile ? '♻️' : '♻️ Reset'}
+          </FlashButton>
           {/* Language switcher removed for now */}
         </div>
       </header>
       <main className="main" style={{ display: 'flex', minHeight: 0 }}>
         <section className={`map-panel`} style={{ display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 }}>
           <div style={{ flex: '1 1 0%', minHeight: 0, position: 'relative' }}>
+            {/* Loading ribbon over map */}
+            {isLoadingService && (
+              <div aria-live="polite" role="status" style={{ position: 'absolute', top: 8, left: 8, right: 8, zIndex: 1100, pointerEvents: 'none' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, border: '1px solid var(--border)', background: 'var(--panel)', color: 'var(--muted)', borderRadius: 8, padding: '6px 10px', boxShadow: '0 2px 10px rgba(0,0,0,0.15)' }}>
+                  <span style={{ width: 14, height: 14, border: '2px solid var(--border)', borderTop: '2px solid var(--accent)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                  <span className="u-small">Loading layer…</span>
+                </div>
+              </div>
+            )}
+            <ErrorBoundary onReset={() => setIsLoadingService(false)}>
             <MapView
               serviceUrl={serviceUrl}
               selectedMapLayerId={selectedMapLayerId}
               where={where}
-              basemap={typeof basemap === 'string' ? basemap : 'usgs_topo'}
+              basemap={basemap}
               onBasemapChange={(b) => setBasemap(b)}
               initialCenter={initialCenterZoom.center}
               initialZoom={initialCenterZoom.zoom}
               zoomToExtent={zoomToExtent}
-              onFeatureCollection={(fc) => setFeatureCollection(fc)}
+             onFeatureCollection={(fc) => {
+               try {
+                 // Transition heavy updates to keep input/UI responsive
+                 const start = (React as any).startTransition || null;
+                 if (start) {
+                   (React as any).startTransition(() => setFeatureCollection(fc));
+                 } else {
+                   setFeatureCollection(fc);
+                 }
+               } catch { setFeatureCollection(fc); }
+             }}
+              onDownloadedExtentChange={(e) => setDownloadedExtent(e as any)}
               featureCollection={featureCollection}
               hoverFeatureId={hoverFeatureId}
               selectedFeatureId={selectedFeatureId}
@@ -749,18 +793,22 @@ export default function App() {
                 try { showToast(summary, { type: 'info' }); } catch { }
                 try { setServiceMeta(meta as MapServiceInfo); } catch { }
                 try {
+                  // cancel any in-flight metadata/count requests
+                  try { metaControllerRef.current?.abort(); } catch {}
+                  metaControllerRef.current = new AbortController();
+                  const signal = metaControllerRef.current.signal;
                   const resolved = resolveEsriLayer(serviceUrl, selectedMapLayerId);
                   if (resolved.type === 'feature' && resolved.url) {
-                    const lm = await fetchLayerMetadata(resolved.url);
+                    const lm = await fetchLayerMetadata(resolved.url, { signal });
                     setLayerMeta(lm);
                     try {
-                      const n = await fetchFeatureCount(resolved.url);
+                      const n = await fetchFeatureCount(resolved.url, undefined, { signal });
                       setFeatureCount(n);
                     } catch { setFeatureCount(null); }
                   } else if (typeof (resolved as any).layerId === 'number' && (resolved as any).serviceRootUrl) {
                     // MapServer sublayer: fetch per-layer metadata to power field suggestions
                     const layerUrl = `${String((resolved as any).serviceRootUrl).replace(/\/+$/, '')}/${(resolved as any).layerId}`;
-                    try { const lm = await fetchLayerMetadata(layerUrl); setLayerMeta(lm as any); } catch { setLayerMeta(null); }
+                    try { const lm = await fetchLayerMetadata(layerUrl, { signal }); setLayerMeta(lm as any); } catch { setLayerMeta(null); }
                     setFeatureCount(null);
                   } else {
                     setLayerMeta(null);
@@ -772,6 +820,7 @@ export default function App() {
                 }
               }}
             />
+            </ErrorBoundary>
             {/* Bottom overlay (over the map) */}
             {infoOpen ? (
               <MoreInfoOverlay
@@ -781,6 +830,8 @@ export default function App() {
                 zoom={zoom}
                 center={format(center, coordOrder)}
                 bbox={formatBbox(bbox, coordOrder, gdal)}
+                centerRaw={center}
+                bboxRaw={bbox}
                 coordOrder={coordOrder}
                 onChangeCoordOrder={setCoordOrder}
                 gdal={gdal}
@@ -862,7 +913,7 @@ export default function App() {
               aria-label="Open sidebar"
               title="Open sidebar"
             >
-              ⏵
+              ⏴
             </button>
           )}
           {/* Edge swipe opener (when sidebar is closed) */}
@@ -974,7 +1025,23 @@ export default function App() {
               window.addEventListener('touchcancel', onUp);
             }}
             className="sidebar-resizer"
-            style={{ width: 6, cursor: 'col-resize', background: 'transparent', touchAction: 'none' as any }}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize sidebar"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              const key = e.key;
+              if (key !== 'ArrowLeft' && key !== 'ArrowRight') return;
+              e.preventDefault();
+              const step = (e.shiftKey ? 40 : 16);
+              const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
+              const min = vw <= 768 ? 200 : 240;
+              const max = Math.max(min, vw - 100);
+              const delta = key === 'ArrowLeft' ? step : -step; // left increases map area => reduce sidebar width
+              const next = Math.max(min, Math.min(max, sidebarWidth - delta));
+              setSidebarWidth(next);
+            }}
+            style={{ width: 10, cursor: 'col-resize', background: 'transparent', touchAction: 'none' as any }}
             title="Drag to resize sidebar"
           />
         )}
@@ -982,16 +1049,18 @@ export default function App() {
           <aside
             style={{ position: 'relative', width: sidebarWidth, borderLeft: '1px solid var(--border)', background: 'var(--panel)', padding: 12, overflow: 'auto' }}
           >
-            {/* Mobile close button */}
-            <FlashButton
-              onClick={() => setSidebarOpen(false)}
-              ariaLabel="Hide sidebar"
-              title={'Hide sidebar'}
-              className="sidebar-close-btn"
-              style={{ position: 'absolute', right: 8, top: 8, zIndex: 20 }}
-            >
-              ✕
-            </FlashButton>
+            {/* Mobile close button (sticky header, avoids covering tabs) */}
+            <div className="sidebar-mobile-header">
+              <FlashButton
+                onClick={() => setSidebarOpen(false)}
+                ariaLabel="Collapse sidebar"
+                title={'Collapse sidebar'}
+                className="sidebar-close-btn"
+                style={{ padding: '8px 10px', fontSize: 14 }}
+              >
+                ⏵
+              </FlashButton>
+            </div>
             {/* Edge swipe closer (inside sidebar, near left edge) */}
             <div
               className="sidebar-swipe-close-zone"
@@ -1049,6 +1118,7 @@ export default function App() {
               style={{ position: 'absolute', left: 0, top: 0, bottom: 0, zIndex: 10, touchAction: 'none' as any }}
               title="Swipe to close sidebar"
             />
+            <ErrorBoundary>
             <Sidebar serviceUrl={serviceUrl} onSelectServiceUrl={setServiceUrl}
               serviceMeta={serviceMeta}
               layerMeta={layerMeta}
@@ -1056,6 +1126,7 @@ export default function App() {
               featureCount={featureCount}
               layerDataRows={layerDataRows}
               featureCollection={featureCollection}
+              downloadedExtent={downloadedExtent as any}
               onZoomToExtent={(ext) => setZoomToExtent(ext)}
               whereValue={where}
               whereDraftValue={whereInput}
@@ -1081,6 +1152,7 @@ export default function App() {
               fallbackReason={fallbackReason}
               isLoadingService={isLoadingService}
             />
+            </ErrorBoundary>
           </aside>
         )}
       </main>

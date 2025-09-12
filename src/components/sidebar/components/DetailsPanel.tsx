@@ -1,7 +1,7 @@
 import React from 'react';
 import type { MapServiceInfo, MapServiceLayerInfo, Extent } from '../../../lib/types/arcgis-rest';
 import { fetchLayerExtent4326 } from '../../../lib/esriLayer';
-import { extentToBounds } from '../../../lib/geometry';
+import { extentToBounds, boundsToExtent4326 } from '../../../lib/geometry';
 import { HtmlValue, LabelValue } from './Sidebar';
 import DataReportTable from './DataReportTable';
 import ExtentMiniMap from '../../ui/ExtentMiniMap';
@@ -22,10 +22,11 @@ type Props = {
   zoom?: number;
   fallbackReason?: string;
   onClearWhere?: () => void;
+  downloadedExtent?: Extent | null;
 };
 
-export default function DetailsPanel({ serviceMeta, layerMeta, loading, isDynamic, onZoomToExtent, featureCount, serviceUrl, whereValue = '1=1', bbox = '', center = '', zoom = 0, fallbackReason, onClearWhere }: Props) {
-  if (loading) return <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 8 }}>Loading metadata…</div>;
+export default function DetailsPanel({ serviceMeta, layerMeta, loading, isDynamic, onZoomToExtent, featureCount, serviceUrl, whereValue = '1=1', bbox = '', center = '', zoom = 0, fallbackReason, onClearWhere, downloadedExtent = null }: Props) {
+  if (loading) return <div className="u-muted u-small" style={{ marginTop: 8 }}>Loading metadata…</div>;
 
   if (layerMeta && typeof layerMeta.id === 'number') {
     return (
@@ -42,6 +43,7 @@ export default function DetailsPanel({ serviceMeta, layerMeta, loading, isDynami
         isDynamic={isDynamic}
         fallbackReason={fallbackReason}
         onClearWhere={onClearWhere}
+        downloadedExtent={downloadedExtent}
       />
     );
   }
@@ -63,7 +65,7 @@ export default function DetailsPanel({ serviceMeta, layerMeta, loading, isDynami
   return null;
 }
 
-function LayerDetailsSection({ layerMeta, serviceMeta, onZoomToExtent, featureCount, serviceUrl, whereValue, bbox, center, zoom, isDynamic, fallbackReason, onClearWhere }: { layerMeta: MapServiceLayerInfo; serviceMeta: MapServiceInfo | null; onZoomToExtent?: (ext: Extent) => void; featureCount?: number | null; serviceUrl?: string; whereValue?: string; bbox?: string; center?: string; zoom?: number; isDynamic?: boolean; fallbackReason?: string; onClearWhere?: () => void }) {
+function LayerDetailsSection({ layerMeta, serviceMeta, onZoomToExtent, featureCount, serviceUrl, whereValue, bbox, center, zoom, isDynamic, fallbackReason, onClearWhere, downloadedExtent }: { layerMeta: MapServiceLayerInfo; serviceMeta: MapServiceInfo | null; onZoomToExtent?: (ext: Extent) => void; featureCount?: number | null; serviceUrl?: string; whereValue?: string; bbox?: string; center?: string; zoom?: number; isDynamic?: boolean; fallbackReason?: string; onClearWhere?: () => void; downloadedExtent?: Extent | null }) {
   const fieldCount = Array.isArray(layerMeta.fields) ? layerMeta.fields.length : 0;
   const extent = (layerMeta as any)?.extent as Extent | undefined;
   const timeInfo = (layerMeta as any)?.timeInfo || (serviceMeta as any)?.timeInfo;
@@ -72,30 +74,50 @@ function LayerDetailsSection({ layerMeta, serviceMeta, onZoomToExtent, featureCo
   const [extentOpen, setExtentOpen] = React.useState<boolean>(true);
   const layerUrl = React.useMemo(() => computeLayerUrl(serviceUrl, layerMeta?.id), [serviceUrl, layerMeta]);
   const [displayExtent, setDisplayExtent] = React.useState<Extent | undefined>(undefined);
+  const [downloaded, setDownloaded] = React.useState<Extent | null>(null);
 
   React.useEffect(() => {
     let cancelled = false;
-    computeLastEditDateString(layerMeta, serviceUrl).then((s) => { if (!cancelled) setLastEdited(s || ''); }).catch(() => {});
-    return () => { cancelled = true; };
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      computeLastEditDateString(layerMeta, serviceUrl, { signal: controller.signal })
+        .then((s) => { if (!cancelled) setLastEdited(s || ''); })
+        .catch(() => {});
+    }, 200);
+    return () => { cancelled = true; try { controller.abort(); } catch {}; window.clearTimeout(timer); };
   }, [layerMeta, serviceUrl]);
 
   // Ensure the mini extent map can render by fetching a 4326 extent when needed
   React.useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        if (extent && extentToBounds(extent as any)) { setDisplayExtent(extent); return; }
-        // Fallback to server-projected layer extent (4326)
-        const url = layerUrl || '';
-        if (!url) { setDisplayExtent(undefined); return; }
-        const e = await fetchLayerExtent4326(url);
-        if (!cancelled) setDisplayExtent(e || undefined);
-      } catch {
-        if (!cancelled) setDisplayExtent(undefined);
-      }
-    })();
-    return () => { cancelled = true; };
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      (async () => {
+        try {
+          if (extent && extentToBounds(extent as any)) { setDisplayExtent(extent); return; }
+          // Fallback to server-projected layer extent (4326)
+          const url = layerUrl || '';
+          if (!url) { setDisplayExtent(undefined); return; }
+          const e = await fetchLayerExtent4326(url, '1=1', { signal: controller.signal });
+          if (!cancelled) setDisplayExtent(e || undefined);
+        } catch {
+          if (!cancelled) setDisplayExtent(undefined);
+        }
+      })();
+    }, 200);
+    return () => { cancelled = true; try { controller.abort(); } catch {}; window.clearTimeout(timer); };
   }, [extent, layerUrl]);
+
+  React.useEffect(() => {
+    try { setDownloaded(downloadedExtent || null); } catch { setDownloaded(null); }
+  }, [downloadedExtent]);
+
+  const layerExtent4326 = React.useMemo(() => {
+    try {
+      const b = extentToBounds(displayExtent as any);
+      return b ? boundsToExtent4326(b as any) : null;
+    } catch { return null; }
+  }, [displayExtent]);
 
   return (
     <div style={{ marginTop: 10, display: 'grid', gap: 6 }}>
@@ -150,6 +172,20 @@ function LayerDetailsSection({ layerMeta, serviceMeta, onZoomToExtent, featureCo
         <div style={{ marginTop: 2 }}>
           <TimeBadge text={timeBadge} />
         </div>
+      ) : null}
+      {/* Extents (text) */}
+      {layerExtent4326 ? (
+        <LabelValue label="Layer Extent">
+          {formatExtent(layerExtent4326 as any)}
+        </LabelValue>
+      ) : null}
+      {downloaded ? (
+        <LabelValue label="Downloaded Extent">
+          <span>{formatExtent(downloaded)}</span>
+          {onZoomToExtent ? (
+            <button onClick={() => onZoomToExtent(downloaded as any)} style={{ marginLeft: 8, padding: '2px 6px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--text)', cursor: 'pointer', fontSize: 11 }}>Zoom</button>
+          ) : null}
+        </LabelValue>
       ) : null}
       <LabelValue label="Name">{layerMeta.name || '—'}</LabelValue>
       {typeof layerMeta.id === 'number' ? (
@@ -236,30 +272,33 @@ function ServiceDetailsSection({ serviceMeta, onZoomToExtent, serviceUrl, whereV
   // Try to render the service extent; if SR is unsupported, fall back to one layer's 4326 extent
   React.useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        if (extent && extentToBounds(extent as any)) { setDisplayExtent(extent as any); return; }
-        const layers = Array.isArray(serviceMeta?.layers) ? serviceMeta.layers : [];
-        if (!layers.length) { setDisplayExtent(undefined); return; }
-        const ids = layers.map((l: any) => Number(l?.id)).filter(n => Number.isFinite(n)).sort((a, b) => a - b);
-        if (!ids.length) { setDisplayExtent(undefined); return; }
-        const root = (() => {
-          try {
-            const s = String(serviceUrl || '');
-            if (/\/(MapServer|FeatureServer)$/i.test(s)) return s.replace(/\/+$/, '');
-            const m = s.match(/^(.*\/(MapServer|FeatureServer))\/(?:\d+)(?:\/.*)?$/i);
-            return (m && m[1]) ? m[1] : '';
-          } catch { return ''; }
-        })();
-        if (!root) { setDisplayExtent(undefined); return; }
-        const lyrUrl = `${root}/${ids[0]}`;
-        const e = await fetchLayerExtent4326(lyrUrl);
-        if (!cancelled) setDisplayExtent(e || undefined);
-      } catch {
-        if (!cancelled) setDisplayExtent(undefined);
-      }
-    })();
-    return () => { cancelled = true; };
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      (async () => {
+        try {
+          if (extent && extentToBounds(extent as any)) { setDisplayExtent(extent as any); return; }
+          const layers = Array.isArray(serviceMeta?.layers) ? serviceMeta.layers : [];
+          if (!layers.length) { setDisplayExtent(undefined); return; }
+          const ids = layers.map((l: any) => Number(l?.id)).filter(n => Number.isFinite(n)).sort((a, b) => a - b);
+          if (!ids.length) { setDisplayExtent(undefined); return; }
+          const root = (() => {
+            try {
+              const s = String(serviceUrl || '');
+              if (/\/(MapServer|FeatureServer)$/i.test(s)) return s.replace(/\/+$/, '');
+              const m = s.match(/^(.*\/(MapServer|FeatureServer))\/(?:\d+)(?:\/.*)?$/i);
+              return (m && m[1]) ? m[1] : '';
+            } catch { return ''; }
+          })();
+          if (!root) { setDisplayExtent(undefined); return; }
+          const lyrUrl = `${root}/${ids[0]}`;
+          const e = await fetchLayerExtent4326(lyrUrl, '1=1', { signal: controller.signal });
+          if (!cancelled) setDisplayExtent(e || undefined);
+        } catch {
+          if (!cancelled) setDisplayExtent(undefined);
+        }
+      })();
+    }, 200);
+    return () => { cancelled = true; try { controller.abort(); } catch {}; window.clearTimeout(timer); };
   }, [extent, serviceMeta, serviceUrl]);
 
   return (
@@ -267,11 +306,11 @@ function ServiceDetailsSection({ serviceMeta, onZoomToExtent, serviceUrl, whereV
       {displayExtent ? (
         <div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
-            <button onClick={() => setExtentOpen(o => !o)} style={{ padding: '6px 8px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--text)', cursor: 'pointer' }}>
+            <button onClick={() => setExtentOpen(o => !o)} className="u-btn">
               {extentOpen ? 'Hide Extent Map' : 'Show Extent Map'}
             </button>
             {onZoomToExtent ? (
-              <button onClick={() => { const e: any = displayExtent as any; const clone = { ...e, spatialReference: e?.spatialReference ? { ...e.spatialReference } : undefined } as any; onZoomToExtent(clone); }} style={{ padding: '6px 8px', fontSize: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--text)', cursor: 'pointer' }}>Zoom to Service Extent</button>
+              <button onClick={() => { const e: any = displayExtent as any; const clone = { ...e, spatialReference: e?.spatialReference ? { ...e.spatialReference } : undefined } as any; onZoomToExtent(clone); }} className="u-btn">Zoom to Service Extent</button>
             ) : null}
           </div>
           {extentOpen ? <ExtentMiniMap extent={displayExtent as any} /> : null}
@@ -290,6 +329,7 @@ function ServiceDetailsSection({ serviceMeta, onZoomToExtent, serviceUrl, whereV
       {(serviceMeta as any)?.spatialReference?.wkid || (serviceMeta as any)?.spatialReference?.latestWkid ? (
         <LabelValue label="Spatial Ref">{String((serviceMeta as any)?.spatialReference?.latestWkid || (serviceMeta as any)?.spatialReference?.wkid)}</LabelValue>
       ) : null}
+      
       {serviceMeta?.capabilities ? (
         <LabelValue label="Capabilities">{serviceMeta.capabilities}</LabelValue>
       ) : null}
@@ -365,3 +405,13 @@ function computeLayerUrl(serviceUrl?: string, id?: number) {
 }
 
 // buildQueryUrls removed
+
+function formatExtent(e: Extent | { xmin: number; ymin: number; xmax: number; ymax: number } | null | undefined): string {
+  try {
+    if (!e) return '—';
+    const xmin = Number((e as any).xmin), ymin = Number((e as any).ymin), xmax = Number((e as any).xmax), ymax = Number((e as any).ymax);
+    if ([xmin, ymin, xmax, ymax].some(v => !Number.isFinite(v))) return '—';
+    const fmt = (n: number) => n.toFixed(6);
+    return `${fmt(xmin)}, ${fmt(ymin)}, ${fmt(xmax)}, ${fmt(ymax)}`;
+  } catch { return '—'; }
+}

@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { LayersControl, MapContainer, TileLayer, useMap, useMapEvents, Pane, LayerGroup } from 'react-leaflet';
+import { MapContainer, TileLayer, useMap, useMapEvents, Pane, LayerGroup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import 'esri-leaflet-renderers';
@@ -9,12 +9,13 @@ import type { Extent } from '../lib/types/arcgis-rest';
 import HighlightOverlay from './HighlightOverlay';
 import { extentToBounds } from '../lib/geometry';
 import ZoomToLayerControl from './controls/ZoomToLayerControl';
+import BasemapChooser from './controls/BasemapChooser';
 
 export type MapViewProps = {
   serviceUrl: string;
   selectedMapLayerId?: number;
   where?: string;
-  basemap?: 'usgs_topo' | 'usgs_imagery_topo' | 'usgs_imagery' | 'osm' | 'carto_positron' | 'carto_dark';
+  basemap?: 'usgs_topo' | 'usgs_imagery_topo' | 'usgs_imagery' | 'osm' | 'carto_positron' | 'carto_dark' | 'carto_voyager' | 'esri_worldimagery' | 'opentopomap' | { key: 'custom'; url: string; attribution?: string; subdomains?: string[]; detectRetina?: boolean };
   onBasemapChange?: (b: 'usgs_topo' | 'usgs_imagery_topo' | 'usgs_imagery' | 'osm' | 'carto_positron' | 'carto_dark') => void;
   onBoundsChange?: (b: L.LatLngBounds) => void;
   onCenterZoomChange?: (center: L.LatLng, zoom: number) => void;
@@ -33,6 +34,7 @@ export type MapViewProps = {
   styleMode?: 'server' | 'custom';
   customStyle?: GeometryStyleOptions;
   onRenderModeChange?: (mode: 'feature' | 'dynamic' | 'fallback_dynamic', reason?: string) => void;
+  onDownloadedExtentChange?: (e: Extent | null) => void;
 };
 
 
@@ -72,6 +74,22 @@ function MapInfoReporter({
   onMouseMove?: (latlng: L.LatLng) => void;
 }) {
   const map = useMap();
+  // Throttle mousemove notifications to once per animation frame
+  const rafRef = React.useRef<number | null>(null);
+  const lastLLRef = React.useRef<L.LatLng | null>(null);
+  const scheduleMouseReport = React.useCallback(() => {
+    if (rafRef.current != null) return;
+    try {
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        const ll = lastLLRef.current;
+        if (ll) { try { onMouseMove?.(ll); } catch { } }
+      });
+    } catch {
+      // Fallback when rAF is unavailable
+      try { onMouseMove?.(lastLLRef.current as any); } catch {}
+    }
+  }, [onMouseMove]);
   useMapEvents({
     load() {
       try {
@@ -98,9 +116,15 @@ function MapInfoReporter({
       } catch { }
     },
     mousemove(e) {
-      try { onMouseMove?.(e.latlng); } catch { }
+      try { lastLLRef.current = e.latlng; scheduleMouseReport(); } catch { }
     },
   });
+  React.useEffect(() => {
+    return () => {
+      try { if (rafRef.current != null) cancelAnimationFrame(rafRef.current); } catch {}
+      rafRef.current = null;
+    };
+  }, []);
   React.useEffect(() => {
     const t = setTimeout(() => {
       try {
@@ -113,7 +137,7 @@ function MapInfoReporter({
   return null;
 }
 
-export default function MapView({ serviceUrl, selectedMapLayerId, where, basemap = 'usgs_topo', onBasemapChange, onBoundsChange, onCenterZoomChange, onMouseMove, onStatusChange, onServiceMetadata, zoomToExtent, initialCenter, initialZoom, onFeatureCollection, featureCollection, hoverFeatureId, selectedFeatureId, onMapFeatureHoverId, onMapFeatureClickId, styleMode, customStyle, onRenderModeChange }: MapViewProps) {
+export default function MapView({ serviceUrl, selectedMapLayerId, where, basemap = 'usgs_topo', onBasemapChange, onBoundsChange, onCenterZoomChange, onMouseMove, onStatusChange, onServiceMetadata, zoomToExtent, initialCenter, initialZoom, onFeatureCollection, featureCollection, hoverFeatureId, selectedFeatureId, onMapFeatureHoverId, onMapFeatureClickId, styleMode, customStyle, onRenderModeChange, onDownloadedExtentChange }: MapViewProps) {
   const [layerBounds, setLayerBounds] = React.useState<L.LatLngBounds | null>(null);
   const layerEndpointKey = React.useMemo(() => `${serviceUrl || ''}::${selectedMapLayerId ?? ''}`, [serviceUrl, selectedMapLayerId]);
   return (
@@ -126,38 +150,8 @@ export default function MapView({ serviceUrl, selectedMapLayerId, where, basemap
         <MapClearSelection onClear={() => { try { onMapFeatureClickId?.(null); } catch {} }} />
         <MapInfoReporter onBoundsChange={onBoundsChange} onCenterZoomChange={onCenterZoomChange} onMouseMove={onMouseMove} />
         <BasemapChangeReporter onChange={onBasemapChange} />
-        <LayersControl position="topright">
-          <LayersControl.BaseLayer checked={basemap === 'usgs_topo'} name="USGS National Map (Topo)">
-            <TileLayer
-              url="https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}"
-              attribution="Tiles courtesy of the U.S. Geological Survey"
-              eventHandlers={{ add: () => { try { onBasemapChange?.('usgs_topo'); } catch {} } }}
-            />
-          </LayersControl.BaseLayer>
-          <LayersControl.BaseLayer checked={basemap === 'usgs_imagery_topo'} name="USGS Imagery Topo">
-            <TileLayer
-              url="https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryTopo/MapServer/tile/{z}/{y}/{x}"
-              attribution="Imagery courtesy of the U.S. Geological Survey"
-              eventHandlers={{ add: () => { try { onBasemapChange?.('usgs_imagery_topo'); } catch {} } }}
-            />
-          </LayersControl.BaseLayer>
-          <LayersControl.BaseLayer checked={basemap === 'usgs_imagery'} name="USGS Imagery Only">
-            <TileLayer
-              url="https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}"
-              attribution="Imagery courtesy of the U.S. Geological Survey"
-              eventHandlers={{ add: () => { try { onBasemapChange?.('usgs_imagery'); } catch {} } }}
-            />
-          </LayersControl.BaseLayer>
-          <LayersControl.BaseLayer checked={basemap === 'osm'} name="OpenStreetMap">
-            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="&copy; OpenStreetMap contributors" eventHandlers={{ add: () => { try { onBasemapChange?.('osm'); } catch {} } }} />
-          </LayersControl.BaseLayer>
-          <LayersControl.BaseLayer checked={basemap === 'carto_positron'} name="CARTO Positron">
-            <TileLayer url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png" attribution="&copy; OpenStreetMap contributors &copy; CARTO" subdomains={["a", "b", "c", "d"] as any} detectRetina eventHandlers={{ add: () => { try { onBasemapChange?.('carto_positron'); } catch {} } }} />
-          </LayersControl.BaseLayer>
-          <LayersControl.BaseLayer checked={basemap === 'carto_dark'} name="CARTO DarkMatter">
-            <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" attribution="&copy; OpenStreetMap contributors &copy; CARTO" subdomains={["a", "b", "c", "d"] as any} detectRetina eventHandlers={{ add: () => { try { onBasemapChange?.('carto_dark'); } catch {} } }} />
-          </LayersControl.BaseLayer>
-        </LayersControl>
+        {/* Single TileLayer driven by basemap value */}
+        <DynamicBasemap basemap={basemap} onBasemapChange={onBasemapChange} />
         {serviceUrl ? (
           <LayerGroup key={`data-${layerEndpointKey}`}>
             <EsriLayer
@@ -171,6 +165,7 @@ export default function MapView({ serviceUrl, selectedMapLayerId, where, basemap
               onFeatureHoverId={onMapFeatureHoverId}
               onFeatureClickId={onMapFeatureClickId}
               onComputedBounds={(b) => setLayerBounds(b)}
+              onDownloadedExtentChange={onDownloadedExtentChange}
               styleMode={styleMode}
               customStyle={customStyle}
             />
@@ -184,6 +179,8 @@ export default function MapView({ serviceUrl, selectedMapLayerId, where, basemap
         />
         <CenterOnSelectedEffect featureCollection={featureCollection} selectedId={selectedFeatureId} />
         <ZoomToLayerControl bounds={layerBounds} />
+        <RecenterOnSelectedControl selectedId={selectedFeatureId} featureCollection={featureCollection} />
+        <BasemapChooser value={basemap || 'usgs_topo'} onChange={(b) => onBasemapChange?.(b)} />
         <ZoomToExtentEffect extent={zoomToExtent} />
       </MapContainer>
     </div>
@@ -217,9 +214,9 @@ function MapInitialViewEffect({ center, zoom }: { center: [number, number] | nul
 function CenterOnSelectedEffect({ featureCollection, selectedId }: { featureCollection?: any; selectedId?: string | number | null }) {
   const map = useMap();
   useEffect(() => {
-    if (!featureCollection || selectedId == null) return;
+    if (selectedId == null) return;
     try {
-      const feats = Array.isArray(featureCollection.features) ? featureCollection.features : [];
+      const feats = Array.isArray(featureCollection?.features) ? featureCollection.features : [];
       const f = feats.find((x: any) => x && (String(x.id) === String(selectedId) || String(x?.properties?.__id) === String(selectedId)));
       if (!f) return;
       const g = (L as any).geoJSON(f);
@@ -230,7 +227,61 @@ function CenterOnSelectedEffect({ featureCollection, selectedId }: { featureColl
         try { (map as any).panTo?.(c, { animate: true }); } catch {}
       }
     } catch { }
-  }, [featureCollection, selectedId, map]);
+  }, [selectedId, map]);
+  return null;
+}
+
+function RecenterOnSelectedControl({ selectedId, featureCollection }: { selectedId?: string | number | null; featureCollection?: any }) {
+  const map = useMap();
+  const controlRef = React.useRef<any>(null);
+  React.useEffect(() => {
+    // Create the control once
+    const C = (L as any).Control.extend({
+      options: { position: 'topleft' },
+      onAdd: function () {
+        const container = (L as any).DomUtil.create('div', 'leaflet-control leaflet-bar');
+        const a = (L as any).DomUtil.create('a', '', container);
+        a.href = '#';
+        a.title = 'Recenter on selected';
+        a.setAttribute('aria-label', 'Recenter on selected');
+        a.style.width = '28px';
+        a.style.height = '28px';
+        a.style.display = 'flex';
+        a.style.alignItems = 'center';
+        a.style.justifyContent = 'center';
+        a.innerHTML = '🎯';
+        a.addEventListener('click', (e: any) => {
+          e.preventDefault();
+          try {
+            if (selectedId == null) return;
+            const feats = Array.isArray(featureCollection?.features) ? featureCollection.features : [];
+            const f = feats.find((x: any) => x && (String(x.id) === String(selectedId) || String(x?.properties?.__id) === String(selectedId)));
+            if (!f) return;
+            const g = (L as any).geoJSON(f);
+            const b = g.getBounds();
+            g.remove();
+            if (b && b.isValid()) { map.fitBounds(b, { maxZoom: 14 }); }
+          } catch {}
+        });
+        return container;
+      }
+    });
+    const ctl = new C();
+    controlRef.current = ctl;
+    map.addControl(ctl);
+    return () => { try { map.removeControl(ctl); } catch {} };
+  }, [map]);
+
+  // Enable/disable based on whether there is a selection
+  React.useEffect(() => {
+    try {
+      const container: HTMLElement | null = controlRef.current && controlRef.current.getContainer ? controlRef.current.getContainer() : null;
+      const btn = container ? (container.querySelector('a') as HTMLAnchorElement | null) : null;
+      if (btn) btn.style.pointerEvents = selectedId == null ? 'none' : 'auto';
+      if (btn) btn.style.opacity = selectedId == null ? '0.4' : '1';
+    } catch {}
+  }, [selectedId]);
+
   return null;
 }
 
@@ -272,4 +323,41 @@ function urlToBasemapKey(url: string): 'usgs_topo' | 'usgs_imagery_topo' | 'usgs
   if (url.includes('basemaps.cartocdn.com/light_all')) return 'carto_positron';
   if (url.includes('basemaps.cartocdn.com/dark_all')) return 'carto_dark';
   return null;
+}
+function DynamicBasemap({ basemap }: { basemap?: any }) {
+  const cfg = getBasemapConfig(basemap);
+  return (
+    <TileLayer key={cfg.key} url={cfg.url} attribution={cfg.attribution}
+      {...(cfg.subdomains ? { subdomains: cfg.subdomains as any } : {})}
+      {...(cfg.detectRetina ? { detectRetina: true } : {})}
+    />
+  );
+}
+
+function getBasemapConfig(key: any): { key: string; url: string; attribution: string; subdomains?: string[]; detectRetina?: boolean } {
+  // custom object
+  if (key && typeof key === 'object' && key.url) {
+    return { key: 'custom', url: String(key.url), attribution: String(key.attribution || ''), subdomains: key.subdomains, detectRetina: !!key.detectRetina };
+  }
+  switch (key) {
+    case 'usgs_imagery_topo':
+      return { key: 'usgs_imagery_topo', url: 'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryTopo/MapServer/tile/{z}/{y}/{x}', attribution: 'Imagery courtesy of the U.S. Geological Survey' };
+    case 'usgs_imagery':
+      return { key: 'usgs_imagery', url: 'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}', attribution: 'Imagery courtesy of the U.S. Geological Survey' };
+    case 'osm':
+      return { key: 'osm', url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: '&copy; OpenStreetMap contributors' };
+    case 'carto_positron':
+      return { key: 'carto_positron', url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', attribution: '&copy; OpenStreetMap contributors &copy; CARTO', subdomains: ['a','b','c','d'], detectRetina: true };
+    case 'carto_dark':
+      return { key: 'carto_dark', url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', attribution: '&copy; OpenStreetMap contributors &copy; CARTO', subdomains: ['a','b','c','d'], detectRetina: true };
+    case 'carto_voyager':
+      return { key: 'carto_voyager', url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', attribution: '&copy; OpenStreetMap contributors &copy; CARTO', subdomains: ['a','b','c','d'], detectRetina: true };
+    case 'esri_worldimagery':
+      return { key: 'esri_worldimagery', url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attribution: 'Source: Esri' };
+    case 'opentopomap':
+      return { key: 'opentopomap', url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', attribution: '&copy; OpenTopoMap (CC-BY-SA)' };
+    case 'usgs_topo':
+    default:
+      return { key: 'usgs_topo', url: 'https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles courtesy of the U.S. Geological Survey' };
+  }
 }

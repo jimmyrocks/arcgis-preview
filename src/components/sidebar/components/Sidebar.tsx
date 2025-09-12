@@ -8,6 +8,7 @@ import DataTab from '../tabs/DataTab';
 import DownloadTab from '../tabs/DownloadTab';
 import StyleTab from '../tabs/StyleTab';
 import type { GeometryStyleOptions } from '../../../lib/styleOptions';
+import { GITHUB_ISSUES_URL, GITHUB_FORK_URL, GITHUB_REPO_URL } from '../../../lib/links';
 export { LabelValue, HtmlValue } from './SidebarPrimitives';
 
 
@@ -19,6 +20,7 @@ export type SidebarProps = {
   layerMeta?: MapServiceLayerInfo | null;
   isGroupLayer?: boolean;
   featureCount?: number | null;
+  downloadedExtent?: { xmin: number; ymin: number; xmax: number; ymax: number } | null;
   // Applied WHERE (committed). Used for details/download.
   whereValue?: string;
   // Draft WHERE mirrors the header input (not yet applied). Used by Query tab.
@@ -48,7 +50,7 @@ export type SidebarProps = {
   isLoadingService?: boolean;
 };
 
-export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent, serviceMeta, layerMeta, isGroupLayer = false, featureCount, whereValue, whereDraftValue, onEditWhere, onCommitWhere, onClearWhere, fallbackReason, layerDataRows, featureCollection, onRowHover, onRowClick, highlightId, disableQuery = false, disableData = false, disableDownload = false, disableStyle = false, zoom, bbox, center, activeTabName, onTabChange, styleMode = 'server', styleOptions = {}, onStyleModeChange, onStyleOptionsChange, isLoadingService = false }: SidebarProps) {
+export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent, serviceMeta, layerMeta, isGroupLayer = false, featureCount, whereValue, whereDraftValue, onEditWhere, onCommitWhere, onClearWhere, fallbackReason, layerDataRows, featureCollection, downloadedExtent, onRowHover, onRowClick, highlightId, disableQuery = false, disableData = false, disableDownload = false, disableStyle = false, zoom, bbox, center, activeTabName, onTabChange, styleMode = 'server', styleOptions = {}, onStyleModeChange, onStyleOptionsChange, isLoadingService = false }: SidebarProps) {
   const [activeTab, setActiveTab] = useState<'select' | 'details' | 'query' | 'data' | 'download' | 'style'>(activeTabName || 'select');
   React.useEffect(() => {
     if (!activeTabName) return;
@@ -128,8 +130,9 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
           title={disableDownload ? (isGroupLayer ? 'Not available for Group Layers' : 'Only for Feature Layers') : undefined}
         >Download</TabButton>
       </div>
-      <div className="tab-panels" style={{ flex: '1 1 0%', minHeight: 0, overflow: 'auto' }}>
+      <div className="tab-panels" style={{ flex: '1 1 0%', minHeight: 0, minWidth: 0, overflow: 'auto' }}>
         {activeTab === 'select' ? (
+          <section id="panel-select" role="tabpanel" aria-labelledby="tab-select">
           <SelectTab
             serviceUrl={serviceUrl}
             onSelectServiceUrl={onSelectServiceUrl}
@@ -137,8 +140,10 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
             serviceMeta={serviceMeta ?? null}
             layerMeta={layerMeta ?? null}
           />
+          </section>
         ) : null}
         {activeTab === 'details' ? (
+          <section id="panel-details" role="tabpanel" aria-labelledby="tab-details">
           <DetailsTab
             serviceMeta={serviceMeta ?? null}
             layerMeta={layerMeta ?? null}
@@ -152,9 +157,12 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
             isDynamic={disableQuery || disableData || disableDownload || disableStyle}
             fallbackReason={fallbackReason}
             onClearWhere={onClearWhere}
+            downloadedExtent={downloadedExtent as any}
           />
+          </section>
         ) : null}
         {activeTab === 'style' ? (
+          <section id="panel-style" role="tabpanel" aria-labelledby="tab-style">
           <StyleTab
             mode={styleMode}
             options={styleOptions}
@@ -162,8 +170,10 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
             onModeChange={onStyleModeChange}
             onOptionsChange={onStyleOptionsChange}
           />
+          </section>
         ) : null}
         {activeTab === 'query' ? (
+          <section id="panel-query" role="tabpanel" aria-labelledby="tab-query">
           <QueryTab
             fields={layerMeta?.fields || []}
             whereDraft={whereDraftValue}
@@ -179,8 +189,10 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
               } catch { return ''; }
             })()}
           />
+          </section>
         ) : null}
         {activeTab === 'data' ? (
+          <section id="panel-data" role="tabpanel" aria-labelledby="tab-data">
           <DataTab
             rows={Array.isArray(layerDataRows) ? layerDataRows : []}
             datasetName={layerMeta?.name || 'features'}
@@ -190,9 +202,12 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
             onRowClick={onRowClick}
             highlightId={highlightId}
             fields={layerMeta?.fields || []}
+            layerTotal={typeof featureCount === 'number' ? featureCount : null}
           />
+          </section>
         ) : null}
         {activeTab === 'download' ? (
+          <section id="panel-download" role="tabpanel" aria-labelledby="tab-download">
           <DownloadTab
             rows={Array.isArray(layerDataRows) ? layerDataRows : []}
             datasetName={layerMeta?.name || 'features'}
@@ -208,13 +223,37 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
             layerTotal={typeof featureCount === 'number' ? featureCount : undefined}
             renderer={(layerMeta as any)?.drawingInfo?.renderer}
           />
+          </section>
         ) : null}
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderTop: '1px solid var(--border)', color: 'var(--muted)', fontSize: 12 }}>
+        <span>Contribute:</span>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <a href={GITHUB_ISSUES_URL} target="_blank" rel="noreferrer noopener" title="Report an issue" style={{ color: 'var(--muted)', textDecoration: 'none' }}>Issues</a>
+          <a href={GITHUB_FORK_URL} target="_blank" rel="noreferrer noopener" title="Fork on GitHub" style={{ color: 'var(--muted)', textDecoration: 'none' }}>Fork</a>
+          <a href={GITHUB_REPO_URL} target="_blank" rel="noreferrer noopener" title="Repository" style={{ color: 'var(--muted)', textDecoration: 'none' }}>Repo</a>
+        </div>
       </div>
     </div>
   );
 }
 
 function TabButton({ name, active, onClick, children, disabled = false, title }: { name: 'select' | 'details' | 'style' | 'query' | 'data' | 'download'; active: boolean; onClick: () => void; children: React.ReactNode; disabled?: boolean; title?: string }) {
+  const [isCoarse, setIsCoarse] = React.useState<boolean>(() => {
+    try { return window.matchMedia('(pointer: coarse)').matches; } catch { return false; }
+  });
+  React.useEffect(() => {
+    try {
+      const mql = window.matchMedia('(pointer: coarse)');
+      const handler = () => setIsCoarse(mql.matches);
+      if (typeof mql.addEventListener === 'function') mql.addEventListener('change', handler);
+      else if (typeof (mql as any).addListener === 'function') (mql as any).addListener(handler);
+      return () => {
+        if (typeof mql.removeEventListener === 'function') mql.removeEventListener('change', handler);
+        else if (typeof (mql as any).removeListener === 'function') (mql as any).removeListener(handler);
+      };
+    } catch { return; }
+  }, []);
   return (
     <button onClick={onClick} title={title}
       role="tab"
@@ -224,7 +263,7 @@ function TabButton({ name, active, onClick, children, disabled = false, title }:
       aria-disabled={disabled}
       className={`tab-button${active ? ' is-active' : ''}`}
       style={{
-        padding: '8px 12px',
+        padding: isCoarse ? '10px 14px' : '8px 12px',
         margin: 0,
         border: '1px solid var(--border)',
         borderBottom: active ? '1px solid var(--panel)' : '1px solid var(--border)',

@@ -5,7 +5,7 @@ import { featureLayer as featureLayerModuleFactory } from 'esri-leaflet';
 import { arcgisToGeoJSON as a2g } from '@terraformer/arcgis';
 import 'esri-leaflet-renderers';
 import type LType from 'leaflet';
-import { extentToBounds } from '../../lib/geometry';
+import { extentToBounds, boundsToExtent4326 } from '../../lib/geometry';
 import { fetchLayerExtent4326 } from '../../lib/esriLayer';
 import { createHitOverlayManager } from '../../lib/hitOverlays';
 import type { MapServiceInfo, MapServiceLayerInfo } from '../../lib/types/arcgis-rest';
@@ -24,6 +24,7 @@ type Props = {
   layerMeta?: MapServiceLayerInfo | null;
   onStatusChange?: (status: 'loading' | 'loaded' | 'error') => void;
   onComputedBounds?: (b: LType.LatLngBounds) => void;
+  onDownloadedExtentChange?: (e: { xmin: number; ymin: number; xmax: number; ymax: number; spatialReference?: { wkid?: number; latestWkid?: number } } | null) => void;
   onFeatureCollection?: (featureCollection: FeatureCollection) => void;
   onFeaturePrecision?: (min: number, max: number) => void;
   onFeatureClickId?: (id: string | number | null) => void;
@@ -52,11 +53,39 @@ type RequestSuccessEvent = {
   rawResponse?: unknown;
 };
 
-export default function EsriFeatureLayer({ url, where = '1=1', serviceMeta, layerMeta, onStatusChange, onComputedBounds, onFeatureCollection, onFeaturePrecision, onFeatureClickId, styleMode = 'server', customStyle = {} }: Props) {
+export default function EsriFeatureLayer({ url, where = '1=1', serviceMeta, layerMeta, onStatusChange, onComputedBounds, onDownloadedExtentChange, onFeatureCollection, onFeaturePrecision, onFeatureClickId, styleMode = 'server', customStyle = {} }: Props) {
   const map = useMap();
   const oidFieldNameRef = React.useRef<string | null>(null);
   const extentFetchRef = React.useRef<boolean>(false);
   const extentToastRef = React.useRef<boolean>(false);
+  const downloadedBoundsRef = React.useRef<L.LatLngBounds | null>(null);
+
+  const reportDownloadedBounds = React.useCallback(() => {
+    try {
+      const ext = boundsToExtent4326(downloadedBoundsRef.current);
+      onDownloadedExtentChange?.(ext);
+    } catch { }
+  }, [onDownloadedExtentChange]);
+
+  const extendBoundsByGeometry = React.useCallback((geom: Geometry | null | undefined) => {
+    if (!geom) return;
+    try {
+      const b = geometryToLatLngBounds(geom);
+      if (!b) return;
+      if (downloadedBoundsRef.current) downloadedBoundsRef.current.extend(b);
+      else downloadedBoundsRef.current = L.latLngBounds(b.getSouthWest(), b.getNorthEast());
+    } catch { }
+  }, []);
+
+  // Debounce reporting to parent to avoid re-render storms
+  const reportTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleReportDownloadedBounds = React.useCallback(() => {
+    try { if (reportTimerRef.current) clearTimeout(reportTimerRef.current); } catch {}
+    reportTimerRef.current = setTimeout(() => {
+      reportTimerRef.current = null;
+      reportDownloadedBounds();
+    }, 200);
+  }, [reportDownloadedBounds]);
   React.useEffect(() => {
     try {
       const name = (layerMeta?.fields || []).find((fld: any) => String(fld?.type || '').toLowerCase() === 'esrifieldtypeoid')?.name;
@@ -72,6 +101,7 @@ export default function EsriFeatureLayer({ url, where = '1=1', serviceMeta, laye
       addTo: (m: L.Map) => void;
       bringToFront?: () => void;
     }) | null = null;
+    const controller = new AbortController();
     let cancelled = false;
     const collectedProperties = new Map<string | number, Feature['properties']>();
     const collectedGeometries = new Map<string | number, Feature['geometry']>();
@@ -97,11 +127,21 @@ export default function EsriFeatureLayer({ url, where = '1=1', serviceMeta, laye
           onFeaturePrecision?.(min, max);
           fc._precision_range_m = { min: Math.round(min), max: Math.round(max) };
         }
-        try { if (features.length > 0) sawAnyFeature = true; } catch {}
+        try { if (features.length > 0) sawAnyFeature = true; } catch { }
         onFeatureCollection?.(fc);
         return;
       } catch { }
       onFeatureCollection?.({ type: 'FeatureCollection', features });
+    };
+
+    // Debounce feature collection reporting to avoid UI thrash
+    let fcReportTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleFeatureReport = () => {
+      try { if (fcReportTimer) clearTimeout(fcReportTimer); } catch {}
+      fcReportTimer = setTimeout(() => {
+        fcReportTimer = null;
+        report();
+      }, 150);
     };
 
     const hitMgr = createHitOverlayManager(map as L.Map, {
@@ -327,8 +367,14 @@ export default function EsriFeatureLayer({ url, where = '1=1', serviceMeta, laye
         try {
           layer.on('requeststart', (e: any) => { log.debug('[EsriFeatureLayer] requeststart', e?.params || e?.requestParams || e?.request?.params); });
           layer.on('loading', () => { log.debug('[EsriFeatureLayer] loading'); });
-          layer.on('load', () => { log.debug('[EsriFeatureLayer] load event'); try { report(); } catch {} });
-          layer.on('requesterror', (e: any) => { try { log.error('[EsriFeatureLayer] requesterror', e); onStatusChange?.('error'); } catch {} });
+          layer.on('load', () => { log.debug('[EsriFeatureLayer] load event'); try { report(); } catch { } });
+          layer.on('requesterror', (e: any) => {
+            try { log.error('[EsriFeatureLayer] requesterror', e); } catch { }
+            // Flush whatever we have so far on errors
+            try { if (fcReportTimer) { clearTimeout(fcReportTimer); fcReportTimer = null; } report(); } catch {}
+            try { if (reportTimerRef.current) { clearTimeout(reportTimerRef.current); reportTimerRef.current = null; } reportDownloadedBounds(); } catch {}
+            try { onStatusChange?.('error'); } catch {}
+          });
           layer.on('requestsuccess', (e: unknown) => {
             try {
               const ev = (e as RequestSuccessEvent) || {};
@@ -337,13 +383,13 @@ export default function EsriFeatureLayer({ url, where = '1=1', serviceMeta, laye
               try {
                 const n = Array.isArray((resp as any)?.features) ? (resp as any).features.length : (Array.isArray((resp as any)?.results) ? (resp as any).results.length : undefined);
                 log.debug('[EsriFeatureLayer] requestsuccess', { featureCount: n, params });
-              } catch {}
+              } catch { }
 
               // Capture objectIdFieldName for robust ID extraction across events
               try {
                 const oidField = (resp?.objectIdFieldName || resp?.objectIdField || '').trim();
                 if (oidField) oidFieldNameRef.current = oidField;
-              } catch {}
+              } catch { }
 
               // Normalize to GeoJSON FeatureCollection when possible
               let fc: FeatureCollection | null = null;
@@ -375,15 +421,18 @@ export default function EsriFeatureLayer({ url, where = '1=1', serviceMeta, laye
                     }
                     const precisionInput = toPrecisionInputFromParams({ params, resp });
                     addGeometryToCollection(fid, f?.geometry, precisionInput);
+                    extendBoundsByGeometry(f?.geometry || null);
                   } catch { }
                 }
-                try { if (fc.features.length > 0) sawAnyFeature = true; } catch {}
-                report();
+                try { if (fc.features.length > 0) sawAnyFeature = true; } catch { }
+                scheduleFeatureReport();
               }
             } catch { }
           });
           layer.on('requestend', (_e: any) => {
-              try { log.debug('[EsriFeatureLayer] requestend'); /* noop: requestend has no response; handled in requestsuccess */ } catch { }
+            try { log.debug('[EsriFeatureLayer] requestend'); } catch { }
+            // Emit downloaded extent only after a full request completes
+            scheduleReportDownloadedBounds();
           });
           layer.on('removefeature', (e: unknown) => {
             try {
@@ -392,7 +441,7 @@ export default function EsriFeatureLayer({ url, where = '1=1', serviceMeta, laye
               const { id: stableId, stable } = resolveFeatureId(ev?.layer?.feature, props);
               // Also compute any direct id to clear potential prior unstable entries
               let directId: any = null;
-              try { directId = getFeatureId(ev?.layer?.feature); } catch {}
+              try { directId = getFeatureId(ev?.layer?.feature); } catch { }
               const idsToClear = new Set<any>();
               if (stable) idsToClear.add(stableId);
               if (directId != null) idsToClear.add(directId);
@@ -400,7 +449,7 @@ export default function EsriFeatureLayer({ url, where = '1=1', serviceMeta, laye
                 collectedGeometries.delete(id);
                 collectedGeometriesPrecision.delete(id);
               }
-              try { log.debug('[EsriFeatureLayer] removefeature', { id: stable ? stableId : '(unstable)', alsoCleared: directId != null && (!stable || directId !== stableId) ? directId : undefined }); } catch {}
+              try { log.debug('[EsriFeatureLayer] removefeature', { id: stable ? stableId : '(unstable)', alsoCleared: directId != null && (!stable || directId !== stableId) ? directId : undefined }); } catch { }
             } catch { }
           });
           layer.on('addfeature', (e: unknown) => {
@@ -420,10 +469,11 @@ export default function EsriFeatureLayer({ url, where = '1=1', serviceMeta, laye
                 const precisionInput = toPrecisionInputFromParams(rp);
                 // no-op: suppress geometry debug logs
                 if (stable) addGeometryToCollection(fid, geom, precisionInput);
+                extendBoundsByGeometry(geom);
               } catch { }
-              try { log.debug('[EsriFeatureLayer] addfeature', { id: stable ? fid : '(unstable)' }); } catch {}
-              try { if (stable) sawAnyFeature = true; } catch {}
-              if (stable) report();
+              try { log.debug('[EsriFeatureLayer] addfeature', { id: stable ? fid : '(unstable)' }); } catch { }
+              try { if (stable) sawAnyFeature = true; } catch { }
+              if (stable) scheduleFeatureReport();
             } catch { }
           });
         } catch { }
@@ -444,7 +494,7 @@ export default function EsriFeatureLayer({ url, where = '1=1', serviceMeta, laye
             await new Promise<void>((resolve) => {
               (layer as any).query().bounds(async (err: any, latlngbounds: L.LatLngBounds) => {
                 if (!err && latlngbounds) {
-                  try { log.debug('[EsriFeatureLayer] computed bounds from query'); } catch {}
+                  try { log.debug('[EsriFeatureLayer] computed bounds from query'); } catch { }
                   onComputedBounds?.(latlngbounds);
                   resolve();
                   return;
@@ -453,10 +503,10 @@ export default function EsriFeatureLayer({ url, where = '1=1', serviceMeta, laye
                 try {
                   if (!extentFetchRef.current) {
                     extentFetchRef.current = true;
-                    const ext = await fetchLayerExtent4326(url);
+                    const ext = await fetchLayerExtent4326(url, '1=1', { signal: controller.signal });
                     const b2 = ext ? extentToBounds(ext as any) : null;
                     if (b2) {
-                      try { log.debug('[EsriFeatureLayer] computed bounds from server extent 4326'); } catch {}
+                      try { log.debug('[EsriFeatureLayer] computed bounds from server extent 4326'); } catch { }
                       onComputedBounds?.(b2);
                       if (!extentToastRef.current) { extentToastRef.current = true; log.warn('Used server-projected extent (4326) fallback for bounds'); }
                     }
@@ -468,16 +518,16 @@ export default function EsriFeatureLayer({ url, where = '1=1', serviceMeta, laye
             });
           } else if (serviceMeta) {
             const b = extentToBounds((serviceMeta as any)?.fullExtent || (serviceMeta as any)?.initialExtent);
-            if (b) { try { log.debug('[EsriFeatureLayer] computed bounds from service meta'); } catch {} onComputedBounds?.(b); }
+            if (b) { try { log.debug('[EsriFeatureLayer] computed bounds from service meta'); } catch { } onComputedBounds?.(b); }
             else {
               // Fallback to server extent
               try {
                 if (!extentFetchRef.current) {
                   extentFetchRef.current = true;
-                  const ext = await fetchLayerExtent4326(url);
+                  const ext = await fetchLayerExtent4326(url, '1=1', { signal: controller.signal });
                   const b2 = ext ? extentToBounds(ext as any) : null;
                   if (b2) {
-                    try { log.debug('[EsriFeatureLayer] computed bounds from server extent 4326 (service fallback)'); } catch {}
+                    try { log.debug('[EsriFeatureLayer] computed bounds from server extent 4326 (service fallback)'); } catch { }
                     onComputedBounds?.(b2);
                     if (!extentToastRef.current) { extentToastRef.current = true; log.warn('Used server-projected extent (4326) fallback for bounds'); }
                   }
@@ -487,22 +537,37 @@ export default function EsriFeatureLayer({ url, where = '1=1', serviceMeta, laye
             }
           }
           log.debug('[EsriFeatureLayer] status loaded');
+          // Flush any pending debounced emits so UI gets a final snapshot immediately
+          try {
+            if (fcReportTimer) { clearTimeout(fcReportTimer); fcReportTimer = null; }
+            report();
+          } catch {}
+          try {
+            if (reportTimerRef.current) { clearTimeout(reportTimerRef.current); reportTimerRef.current = null; }
+            reportDownloadedBounds();
+          } catch {}
           onStatusChange?.('loaded');
         } catch {
           log.warn('[EsriFeatureLayer] addTo(map) failed; marking loaded anyway');
           onStatusChange?.('loaded');
         }
       } catch {
-        try { log.error('[EsriFeatureLayer] top-level error creating feature layer'); } catch {}
+        try { log.error('[EsriFeatureLayer] top-level error creating feature layer'); } catch { }
+        // Flush accumulators on error so UI reflects the last known state
+        try { if (fcReportTimer) { clearTimeout(fcReportTimer); fcReportTimer = null; } report(); } catch {}
+        try { if (reportTimerRef.current) { clearTimeout(reportTimerRef.current); reportTimerRef.current = null; } reportDownloadedBounds(); } catch {}
         if (!cancelled) onStatusChange?.('error');
       }
     })();
 
     return () => {
       cancelled = true;
-      try { log.debug('[EsriFeatureLayer] cleanup'); } catch {}
+      try { controller.abort(); } catch {}
+      try { log.debug('[EsriFeatureLayer] cleanup'); } catch { }
       try { onFeatureCollection?.({ type: 'FeatureCollection', features: [] }); } catch { }
       try { hitMgr.destroy(); } catch { }
+      try { if (reportTimerRef.current) clearTimeout(reportTimerRef.current); } catch {}
+      try { if (fcReportTimer) clearTimeout(fcReportTimer); } catch {}
       if (layer) {
         try { map.removeLayer(layer); } catch { }
       }
@@ -701,4 +766,50 @@ function effectiveMetersFromPrecision(input: PrecisionInput | undefined, map: L.
     // Effective precision is the dominant (largest) limit
     return Math.max(...candidates.filter((n) => Number.isFinite(n) && n > 0));
   } catch { return approxPrecisionMeters(map); }
+}
+
+function geometryToLatLngBounds(geom: Geometry | null | undefined): L.LatLngBounds | null {
+  try {
+    if (!geom) return null;
+    // GeoJSON coordinates are [lon, lat]
+    let minLat = Infinity, minLng = Infinity, maxLat = -Infinity, maxLng = -Infinity;
+    const extend = (lng: number, lat: number) => {
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+      if (lng < minLng) minLng = lng;
+      if (lng > maxLng) maxLng = lng;
+    };
+    const walk = (coords: any) => {
+      if (!coords) return;
+      if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+        extend(Number(coords[0]), Number(coords[1]));
+        return;
+      }
+      for (const c of coords) walk(c);
+    };
+    switch (geom.type) {
+      case 'Point': walk(geom.coordinates as any); break;
+      case 'MultiPoint':
+      case 'LineString': walk(geom.coordinates as any); break;
+      case 'MultiLineString':
+      case 'Polygon': walk(geom.coordinates as any); break;
+      case 'MultiPolygon': walk(geom.coordinates as any); break;
+      case 'GeometryCollection':
+        for (const g of (geom as any).geometries || []) {
+          const b = geometryToLatLngBounds(g);
+          if (b) {
+            if (minLat === Infinity) { const sw = b.getSouthWest(), ne = b.getNorthEast(); minLat = sw.lat; minLng = sw.lng; maxLat = ne.lat; maxLng = ne.lng; }
+            else {
+              const sw = b.getSouthWest(), ne = b.getNorthEast();
+              extend(sw.lng, sw.lat);
+              extend(ne.lng, ne.lat);
+            }
+          }
+        }
+        break;
+    }
+    if (minLat === Infinity) return null;
+    return L.latLngBounds(L.latLng(minLat, minLng), L.latLng(maxLat, maxLng));
+  } catch { return null; }
 }

@@ -33,6 +33,7 @@ body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, A
 
 .app { display: grid; grid-template-rows: auto 1fr; height: 100%; }
 .header { display: flex; gap: 12px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.header { position: relative; }
 .header h1 { font-size: 16px; margin: 0; font-weight: 600; }
 .url-input { flex: 1; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel-subtle); color: var(--text); }
 
@@ -76,7 +77,7 @@ body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, A
   top: 50%;
   transform: translate(-50%, -50%);
   width: 2px;
-  height: 36px;
+  height: 56px;
   background: var(--border);
   border-radius: 2px;
 }
@@ -84,7 +85,14 @@ body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, A
   .sidebar-resizer:hover::after { background: var(--muted); }
 }
 @media (max-width: 768px) {
-  .sidebar-resizer { width: 14px !important; }
+  .header h1 { font-size: 14px; }
+  .sidebar-resizer { width: 24px !important; }
+}
+/* Prefer wider hit target when using touch, regardless of width (e.g., tablets) */
+@media (pointer: coarse) {
+  .sidebar-resizer { width: 24px !important; }
+  .edge-open-zone { width: 28px; }
+  .sidebar-swipe-close-zone { width: 32px; }
 }
 
 /* Edge swipe zones */
@@ -107,29 +115,23 @@ body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, A
   .sidebar-close-btn { display: inline-flex; }
 }
 
-/* Overlay mode: scrim and slide-in sidebar */
-.overlay-scrim {
-  position: absolute;
-  inset: 0;
-  background: rgba(0,0,0,0.35);
-  z-index: 9;
-  opacity: 0;
-  transition: opacity 160ms ease;
-  pointer-events: none;
+/* Sticky mobile header inside sidebar so the close button doesn't cover tabs */
+.sidebar-mobile-header { display: none; }
+@media (max-width: 768px) {
+  .sidebar-mobile-header {
+    position: sticky;
+    top: 0;
+    z-index: 15;
+    background: var(--panel);
+    display: flex;
+    justify-content: flex-start;
+    padding-bottom: 8px;
+  }
 }
-.overlay-scrim.is-open {
-  opacity: 1;
-  pointer-events: auto;
-}
-.sidebar-overlay {
-  transform: translateX(100%);
-  transition: transform 200ms ease;
-  z-index: 10;
-  box-shadow: -8px 0 16px rgba(0,0,0,0.25);
-}
-.sidebar-overlay.is-open {
-  transform: translateX(0);
-}
+
+/* (Consolidated tab-panels rules moved below with border block) */
+
+/* (Removed unused overlay-scrim/sidebar-overlay styles) */
 
 /* Edge handle to indicate collapsed sidebar */
 .open-tab-handle {
@@ -162,9 +164,7 @@ body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, A
 }
 
 /* Dim map controls behind overlay */
-.map-panel.overlay-dim .leaflet-control-container { opacity: 0.35; pointer-events: none; transition: opacity 160ms ease; }
-.map-panel.overlay-dim .overlay-dimmable { opacity: 0.35; pointer-events: none; transition: opacity 160ms ease; }
-.map-panel.overlay-dim .open-tab-handle { opacity: 0; pointer-events: none; }
+/* (Removed unused overlay-dim styles) */
 
 /* Resizer active feedback */
 .sidebar-resizer:active::after { background: var(--text); }
@@ -174,6 +174,7 @@ body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, A
   /* Show scrollbars */
   scrollbar-width: thin;
   scrollbar-color: var(--muted) var(--panel-subtle);
+  scrollbar-gutter: stable;
 }
 .data-table-scroll::-webkit-scrollbar {
   width: 12px;
@@ -288,6 +289,9 @@ body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, A
   border-bottom: 1px solid var(--border);
   gap: 8px;
   flex-wrap: wrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 .data-table-search {
   padding: 4px 8px;
@@ -305,13 +309,29 @@ body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, A
 }
 
 /* Tabs styling */
-.tabs { padding: 0 6px; gap: 4px; }
+.tabs { padding: 0 6px; gap: 4px; position: relative; }
+@media (max-width: 768px) {
+  .tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
+/* horizontal scroll hint shadows on tabs */
+.tabs::before,
+.tabs::after {
+  content: '';
+  position: sticky;
+  top: 0;
+  width: 12px;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+.tabs::before { left: 0; background: linear-gradient(to right, rgba(0,0,0,0.18), rgba(0,0,0,0)); }
+.tabs::after { right: 0; background: linear-gradient(to left, rgba(0,0,0,0.18), rgba(0,0,0,0)); }
 .tab-button { font-size: 12px; line-height: 1; }
 .tab-button .tab-label { display: inline-block; padding-bottom: 4px; }
 .tab-button.is-active .tab-label { border-bottom: 2px solid var(--accent); }
 .tab-button:not(.is-active):hover { background: var(--hover); color: var(--text); }
 .tab-button + .tab-button { margin-left: 4px; }
-.tab-panels { border: 1px solid var(--border); border-top: none; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; padding: 8px; background: var(--panel); }
+.tab-panels { border: 1px solid var(--border); border-top: none; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; padding: 8px; background: var(--panel); width: 100%; min-width: 0; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; scrollbar-gutter: stable; }
 
 /* Small circular icon buttons used in the header */
 .icon-button {
@@ -327,6 +347,9 @@ body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, A
   cursor: pointer;
   transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
 }
+@media (max-width: 640px) {
+  .icon-button { width: 26px; height: 26px; }
+}
 .icon-button:hover {
   background: var(--hover);
   color: var(--text);
@@ -338,6 +361,94 @@ body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, A
 .icon-button:active {
   background: var(--panel-strong);
 }
+
+/* Horizontal scroll hint container for X-overflow areas (e.g., Download tab table) */
+.scroll-shadow-x { position: relative; }
+.scroll-shadow-x::before,
+.scroll-shadow-x::after {
+  content: '';
+  position: sticky;
+  top: 0; width: 14px; height: 100%; pointer-events: none; z-index: 1;
+}
+.scroll-shadow-x::before { left: 0; background: linear-gradient(to right, rgba(0,0,0,0.18), rgba(0,0,0,0)); }
+.scroll-shadow-x::after  { right: 0; background: linear-gradient(to left, rgba(0,0,0,0.18), rgba(0,0,0,0)); }
+
+/* Stable scrollbars in More Info */
+.more-info-overlay { scrollbar-gutter: stable; }
+
+/* Export cards (Download tab) */
+.export-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+.export-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.export-card-title { font-weight: 600; }
+.export-card-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.export-card-note { display: grid; gap: 4px; }
+.export-card-actions { display: grid; gap: 6px; }
+.export-card-actions { position: sticky; bottom: 0; background: var(--panel); padding-top: 4px; border-top: 1px solid var(--border); }
+.export-advanced { display: grid; gap: 8px; margin-top: 6px; }
+.export-fields { display: grid; gap: 6px; }
+.export-field-list { max-height: 160px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; padding: 6px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.export-field-item { font-size: 12px; color: var(--text); }
+
+/* Basemap chooser control */
+.basemap-chooser .bm-ctl { position: relative; }
+.basemap-chooser .bm-toggle {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.basemap-chooser .bm-panel {
+  position: absolute;
+  left: 0;
+  top: 100%;
+  margin-top: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+  padding: 8px;
+  display: grid;
+  grid-template-columns: 1fr; /* single column for predictable width */
+  gap: 8px;
+  width: 220px; /* clamp width so labels do not overflow */
+  max-height: 60vh; /* allow scrolling instead of growing off-screen */
+  overflow: auto;
+  z-index: 400; /* above map controls */
+}
+/* When the control is on the right, anchor the panel to the right edge */
+.leaflet-right .basemap-chooser .bm-panel { left: auto; right: 0; }
+.basemap-chooser .bm-option {
+  display: grid;
+  grid-template-columns: 48px 1fr;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel-subtle);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  cursor: pointer;
+  text-align: left;
+}
+.basemap-chooser .bm-option span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.basemap-chooser .bm-option.is-active { outline: 2px solid var(--accent); }
+.basemap-chooser .bm-option img { width: 48px; height: 48px; border-radius: 4px; display: block; }
+.basemap-chooser .bm-form { display: grid; gap: 6px; grid-template-columns: 1fr; margin-top: 6px; }
+.basemap-chooser .bm-form .u-input { width: 100%; }
+.basemap-chooser .bm-form .u-btn { width: 100%; }
 
 /* CodeMirror (WHERE editor) theme tweaks */
 .cm-editor {
@@ -368,4 +479,24 @@ body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, A
 @keyframes spin {
   0% { transform: translateY(-50%) rotate(0deg); }
   100% { transform: translateY(-50%) rotate(360deg); }
+}
+
+/* (Removed GitHub corner styles) */
+
+/* --- UI Utilities (initial extraction) --- */
+.u-row { display: flex; align-items: center; gap: 8px; }
+.u-muted { color: var(--muted); }
+.u-panel { border: 1px solid var(--border); border-radius: 6px; background: var(--panel); padding: 8px; }
+.u-input { width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel-subtle); color: var(--text); font-size: 12px; }
+.u-btn { padding: 8px 10px; font-size: 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel-subtle); color: var(--text); cursor: pointer; }
+.u-btn[disabled] { cursor: not-allowed; opacity: 0.6; }
+.u-note { color: var(--muted); font-size: 11px; }
+.u-small { font-size: 12px; }
+.u-label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.u-kv { display: flex; gap: 8px; }
+.u-kv-label { min-width: 92px; color: var(--muted); font-size: 12px; }
+.u-kv-value { font-size: 12px; }
+.u-htmlbox { font-size: 12px; line-height: 1.4; max-height: 160px; overflow-y: auto; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-subtle); }
+@media (pointer: coarse) {
+  .u-btn { padding: 10px 12px; }
 }

@@ -94,10 +94,11 @@ export default function SelectTab({ serviceUrl, onSelectServiceUrl, onZoomToExte
     };
   }, [root]);
 
-  // Load layers for selected service
+  // Load layers for selected service (debounced + cancellable)
   useEffect(() => {
     let cancelled = false;
-    async function loadLayers() {
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
       setLayers([]);
       // details are handled upstream
       if (!selectedService) return;
@@ -106,7 +107,7 @@ export default function SelectTab({ serviceUrl, onSelectServiceUrl, onZoomToExte
       const type = selectedService.slice(lastSlash + 1) as ServiceRef['type'];
       const svcUrl = `${root.replace(/\/+$/, '')}/${servicePath}/${type}`;
       try {
-        const meta = await fetchServiceMetadata(svcUrl);
+        const meta = await fetchServiceMetadata(svcUrl, { signal: controller.signal });
         if (cancelled) return;
         const ls = Array.isArray(meta?.layers) ? meta.layers.map((l: any) => ({ id: l.id, name: l.name })) : [];
         setLayers(ls);
@@ -121,9 +122,8 @@ export default function SelectTab({ serviceUrl, onSelectServiceUrl, onZoomToExte
           setSelectedLayerId(id);
         }
       } catch { if (!cancelled) { setLayers([]); } }
-    }
-    loadLayers();
-    return () => { cancelled = true; };
+    }, 200);
+    return () => { cancelled = true; try { controller.abort(); } catch {}; window.clearTimeout(timer); };
   }, [selectedService, root]);
 
   function applyLayer(id: string) {
@@ -146,22 +146,22 @@ export default function SelectTab({ serviceUrl, onSelectServiceUrl, onZoomToExte
   return (
     <div style={{ display: 'grid', gap: 10 }}>
       <div>
-        <label style={{ display: 'block', fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>Root</label>
+        <label className="u-label">Root</label>
         <input
           value={root}
           onChange={(e) => setRoot(e.target.value)}
           placeholder={defaultRoot}
-          style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--text)' }}
+          className="u-input"
         />
       </div>
       {/* PBF toggle removed */}
       {/* Folders UI removed: we list all services recursively */}
       <div>
-        <label style={{ display: 'block', fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>Service</label>
+        <label className="u-label">Service</label>
         <select
           value={selectedService}
           onChange={(e) => setSelectedService(e.target.value)}
-          style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--text)' }}
+          className="u-input"
         >
           <option value="">— Select Service —</option>
           {loading ? <option value="">Loading…</option> : null}
@@ -170,15 +170,15 @@ export default function SelectTab({ serviceUrl, onSelectServiceUrl, onZoomToExte
             <option key={`${s.path}/${s.type}`} value={`${s.path}/${s.type}`}>{s.path} ({s.type})</option>
           ))}
         </select>
-        {loadError ? <div style={{ marginTop: 6, color: 'tomato', fontSize: 12 }}>{loadError}</div> : null}
+        {loadError ? <div className="u-small" style={{ marginTop: 6, color: 'tomato' }}>{loadError}</div> : null}
       </div>
       {selectedService ? (
         <div>
-          <label style={{ display: 'block', fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>Layer</label>
+          <label className="u-label">Layer</label>
           <select
             value={selectedLayerId}
             onChange={(e) => applyLayer(e.target.value)}
-            style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--text)' }}
+            className="u-input"
           >
             {/* MapServer can be dynamic (blank) or specific id; FeatureServer defaults to 0 */}
             {selectedService.endsWith('/MapServer') ? <option value="">Dynamic (all layers)</option> : null}
@@ -189,7 +189,7 @@ export default function SelectTab({ serviceUrl, onSelectServiceUrl, onZoomToExte
             )}
           </select>
           {selectedService.endsWith('/MapServer') && selectedLayerId === '' ? (
-            <div style={{ marginTop: 6, fontSize: 12, color: 'var(--muted)' }}>
+            <div className="u-muted u-small" style={{ marginTop: 6 }}>
               Dynamic layers provide an overview and are not clickable or queryable.
             </div>
           ) : null}
@@ -225,7 +225,7 @@ export default function SelectTab({ serviceUrl, onSelectServiceUrl, onZoomToExte
                   setZoomBusy(false);
                 }}
                 disabled={zoomBusy || (!((layerMeta as any)?.extent || (serviceMeta as any)?.fullExtent || (serviceMeta as any)?.initialExtent) && !(selectedService && selectedService.endsWith('/MapServer') ? selectedLayerId !== '' : !!selectedService))}
-                style={{ padding: '8px 10px', fontSize: 12, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--text)', cursor: (zoomBusy ? 'wait' : 'pointer'), opacity: (zoomBusy ? 0.6 : 1), outlineStyle: 'none' }}
+                className="u-btn"
               >
                 {zoomBusy ? 'Zooming…' : 'Zoom to Extent'}
               </button>

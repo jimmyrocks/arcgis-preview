@@ -6,9 +6,10 @@ type Props = {
   style?: React.CSSProperties;
   title?: string;
   ariaLabel?: string;
+  className?: string;
 };
 
-export default function FlashButton({ onClick, children, style, title, ariaLabel }: Props) {
+export default function FlashButton({ onClick, children, style, title, ariaLabel, className }: Props) {
   const [flash, setFlash] = React.useState(false);
   function handleClick() {
     try { setFlash(true); setTimeout(() => setFlash(false), 350); } catch {}
@@ -19,6 +20,7 @@ export default function FlashButton({ onClick, children, style, title, ariaLabel
       onClick={handleClick}
       title={title}
       aria-label={ariaLabel}
+      className={className}
       style={{
         padding: '10px 14px',
         fontSize: 16,

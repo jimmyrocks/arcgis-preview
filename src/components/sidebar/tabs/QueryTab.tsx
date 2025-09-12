@@ -62,26 +62,18 @@ export default function QueryTab({ fields = [], whereDraft = '', onDraftChange, 
 
   return (
     <div style={{ display: 'grid', gap: 10, color: 'var(--text)' }}>
-      <div style={{ color: 'var(--muted)', fontSize: 12 }}>Compose a WHERE filter using fields and helpers</div>
+      <div className="u-muted u-small">Compose a WHERE filter using fields and helpers</div>
       {/* Editor controls above the editor */}
       <div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-          <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+          <div className="u-muted" style={{ fontSize: 11 }}>
             Cmd/Ctrl+Enter to apply
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <button
               onClick={() => onDraftChange?.(beautifyWhere(where, fields))}
               title="Beautify WHERE clause"
-              style={{
-                padding: '4px 8px',
-                fontSize: 12,
-                borderRadius: 6,
-                border: '1px solid var(--border)',
-                background: 'var(--panel-subtle)',
-                color: 'var(--text)',
-                cursor: 'pointer',
-              }}
+              className="u-btn"
             >
               Beautify
             </button>
@@ -125,8 +117,7 @@ export default function QueryTab({ fields = [], whereDraft = '', onDraftChange, 
           ]}
         />
         <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
-          <button onClick={() => { try { onCommitDraft?.(); } catch {} }}
-            style={{ padding: '8px 12px', fontSize: 12, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--text)', cursor: 'pointer' }}>Apply</button>
+          <button onClick={() => { try { onCommitDraft?.(); } catch {} }} className="u-btn">Apply</button>
         </div>
       </div>
 
@@ -134,10 +125,10 @@ export default function QueryTab({ fields = [], whereDraft = '', onDraftChange, 
       {fields.length ? (
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            <div style={{ fontSize: 12, color: 'var(--muted)' }}>Fields</div>
+            <div className="u-muted u-small">Fields</div>
             {/* Optional: field search */}
             <input placeholder="Search fields" onChange={(e) => setFieldFilter(e.target.value)} value={fieldFilter}
-              style={{ flex: '0 0 160px', padding: '4px 6px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--text)', fontSize: 12 }} />
+              className="u-input" style={{ flex: '0 0 160px' }} />
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 84, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 6 }}>
             {filteredFields.map(f => {
@@ -156,7 +147,7 @@ export default function QueryTab({ fields = [], whereDraft = '', onDraftChange, 
       ) : null}
       {/* Filter helpers second (scrollable to ~3 rows) */}
       <div>
-        <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>Filters</div>
+        <div className="u-muted u-small" style={{ marginBottom: 4 }}>Filters</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 84, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 6 }}>
           {['AND','OR','NOT','LIKE','IN','BETWEEN','IS NULL','IS NOT NULL','=', '<', '<=', '>', '>=', '<>'].map((k) => (
             <button key={k} onClick={() => (k === 'IN' || k === 'LIKE' || k === 'BETWEEN') ? appendFilterSmart(k) : append(k)} style={{ padding: '4px 8px', borderRadius: 9999, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--text)', fontSize: 12, cursor: 'pointer' }}>{k}</button>

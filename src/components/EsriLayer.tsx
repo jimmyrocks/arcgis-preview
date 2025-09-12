@@ -16,6 +16,7 @@ type EsriLayerProps = {
   onStatusChange?: (status: 'loading' | 'loaded' | 'error') => void;
   onServiceMetadata?: (summary: string, meta: any) => void;
   onComputedBounds?: (b: LType.LatLngBounds) => void;
+  onDownloadedExtentChange?: (e: { xmin: number; ymin: number; xmax: number; ymax: number; spatialReference?: { wkid?: number; latestWkid?: number } } | null) => void;
   onFeatureCollection?: (fc: any) => void;
   onFeatureHoverId?: (id: string | number | null) => void;
   onFeatureClickId?: (id: string | number | null) => void;
@@ -24,7 +25,7 @@ type EsriLayerProps = {
   onRenderModeChange?: (mode: 'feature' | 'dynamic' | 'fallback_dynamic', reason?: string) => void;
 };
 
-export default function EsriLayer({ serviceUrl, selectedMapLayerId, where = '1=1', onStatusChange, onServiceMetadata, onComputedBounds, onFeatureCollection, onFeatureClickId, styleMode, customStyle, onRenderModeChange }: EsriLayerProps) {
+export default function EsriLayer({ serviceUrl, selectedMapLayerId, where = '1=1', onStatusChange, onServiceMetadata, onComputedBounds, onDownloadedExtentChange, onFeatureCollection, onFeatureClickId, styleMode, customStyle, onRenderModeChange }: EsriLayerProps) {
   const [serviceMeta, setServiceMeta] = React.useState<any | null>(null);
   const [fallbackOnlyLayerId, setFallbackOnlyLayerId] = React.useState<number | null>(null);
   const [dynamicOverlayOnlyLayerId, setDynamicOverlayOnlyLayerId] = React.useState<number | null>(null);
@@ -98,6 +99,18 @@ export default function EsriLayer({ serviceUrl, selectedMapLayerId, where = '1=1
     setLayerMeta(null);
     lastFallbackReasonRef.current = undefined;
   }, [isMapServerLayer, resolved.layerId, resolved.url]);
+
+  // If styling changes, ensure any temporary dynamic overlay is cleared to avoid double rendering
+  React.useEffect(() => {
+    try {
+      if (dynamicOverlayOnlyLayerId != null) {
+        setDynamicOverlayOnlyLayerId(null);
+        log.debug('[EsriLayer] style changed; clearing dynamic overlay');
+      }
+    } catch {}
+    // do not reset fallbackOnlyLayerId here; fallback state should persist if the layer lacks Query
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [styleMode, JSON.stringify(customStyle || {})]);
 
   // For MapServer sublayers, fetch the layer metadata to accurately detect Query support
   React.useEffect(() => {
@@ -190,13 +203,13 @@ export default function EsriLayer({ serviceUrl, selectedMapLayerId, where = '1=1
       return (
         <>
           {dynamicOverlayOnlyLayerId != null ? (
-            <EsriDynamicLayer
-              url={(resolved as any).serviceRootUrl || resolved.url}
-              serviceMeta={serviceMeta}
-              onStatusChange={() => { /* overlay status ignored */ }}
-              onComputedBounds={onComputedBounds}
-              onlyLayerId={dynamicOverlayOnlyLayerId}
-            />
+          <EsriDynamicLayer
+            url={(resolved as any).serviceRootUrl || resolved.url}
+            serviceMeta={serviceMeta}
+            onStatusChange={() => { /* overlay status ignored */ }}
+            onComputedBounds={onComputedBounds}
+            onlyLayerId={dynamicOverlayOnlyLayerId}
+          />
           ) : null}
           <EsriFeatureLayer
             key={`fl-${String(resolved.url)}-${String(styleMode)}-${JSON.stringify(customStyle || {})}`}
@@ -206,6 +219,7 @@ export default function EsriLayer({ serviceUrl, selectedMapLayerId, where = '1=1
             layerMeta={layerMeta}
             onStatusChange={handleStatus}
             onComputedBounds={onComputedBounds}
+            onDownloadedExtentChange={onDownloadedExtentChange}
             onFeatureCollection={handleFeatureCollection}
             onFeatureClickId={onFeatureClickId}
             styleMode={styleMode}

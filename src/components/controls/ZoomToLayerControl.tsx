@@ -15,7 +15,7 @@ export default function ZoomToLayerControl({ bounds }: Props) {
   React.useEffect(() => {
     if (!bounds) return; // no extent yet -> no control
     const C = (L as any).Control.extend({
-      options: { position: 'topright' },
+      options: { position: 'topleft' },
       onAdd: function () {
         const container = (L as any).DomUtil.create('div', 'leaflet-control leaflet-bar');
         const a = (L as any).DomUtil.create('a', '', container);

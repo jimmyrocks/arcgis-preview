@@ -35,7 +35,7 @@ export function timeExtentToBadge(timeInfo: any): string {
 
 // Attempts to compute most recent edit date as a formatted string.
 // Falls back to '', avoiding errors.
-export async function computeLastEditDateString(layerMeta: MapServiceLayerInfo | null | undefined, serviceUrl?: string): Promise<string> {
+export async function computeLastEditDateString(layerMeta: MapServiceLayerInfo | null | undefined, serviceUrl?: string, opts?: { signal?: AbortSignal }): Promise<string> {
   try {
     if (!layerMeta) return '';
     const editingInfo = (layerMeta as any)?.editingInfo;
@@ -54,7 +54,7 @@ export async function computeLastEditDateString(layerMeta: MapServiceLayerInfo |
       q.searchParams.set('outFields', '');
       q.searchParams.set('returnGeometry', 'false');
       q.searchParams.set('outStatistics', JSON.stringify(stats));
-      const res = await fetch(q.toString());
+      const res = await fetch(q.toString(), { signal: opts?.signal });
       if (!res.ok) return '';
       const json = await res.json();
       const feats = Array.isArray(json?.features) ? json.features : [];
@@ -69,4 +69,3 @@ export async function computeLastEditDateString(layerMeta: MapServiceLayerInfo |
     return '';
   }
 }
-

@@ -15,9 +15,10 @@ type Props = {
   isDynamic?: boolean;
   fallbackReason?: string;
   onClearWhere?: () => void;
+  downloadedExtent?: Extent | null;
 };
 
-export default function DetailsTab({ serviceMeta, layerMeta, featureCount, onZoomToExtent, serviceUrl, whereValue, bbox, center, zoom, isDynamic = false, fallbackReason, onClearWhere }: Props) {
+export default function DetailsTab({ serviceMeta, layerMeta, featureCount, onZoomToExtent, serviceUrl, whereValue, bbox, center, zoom, isDynamic = false, fallbackReason, onClearWhere, downloadedExtent }: Props) {
   return (
     <DetailsPanel
       serviceMeta={serviceMeta}
@@ -33,6 +34,7 @@ export default function DetailsTab({ serviceMeta, layerMeta, featureCount, onZoo
       zoom={zoom}
       fallbackReason={fallbackReason}
       onClearWhere={onClearWhere}
+      downloadedExtent={downloadedExtent || null}
     />
   );
 }
