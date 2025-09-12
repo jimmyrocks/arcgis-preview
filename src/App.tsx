@@ -319,30 +319,39 @@ export default function App() {
 
   // Keep current extent (bounds) in the URL as `extent=xmin,ymin,xmax,ymax` (debounced)
   useEffect(() => {
+    const delay = isMobile ? 600 : 200;
     const t = setTimeout(() => {
       const params = new URLSearchParams(location.search);
       const e = (bbox || '').replace(/\s+/g, '');
       if (e) params.set('extent', e); else params.delete('extent');
       const newUrl = `${location.pathname}?${params.toString()}`;
       history.replaceState({}, '', newUrl);
-    }, 200);
+    }, delay);
     return () => clearTimeout(t);
-  }, [bbox]);
+  }, [bbox, isMobile]);
 
-  // Keep center and zoom in URL
+  // Keep center and zoom in URL (debounced, heavier on mobile)
   useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const c = (center || '').replace(/\s+/g, '');
-    if (c) params.set('center', c); else params.delete('center');
-    const newUrl = `${location.pathname}?${params.toString()}`;
-    history.replaceState({}, '', newUrl);
-  }, [center]);
+    const delay = isMobile ? 600 : 200;
+    const t = setTimeout(() => {
+      const params = new URLSearchParams(location.search);
+      const c = (center || '').replace(/\s+/g, '');
+      if (c) params.set('center', c); else params.delete('center');
+      const newUrl = `${location.pathname}?${params.toString()}`;
+      history.replaceState({}, '', newUrl);
+    }, delay);
+    return () => clearTimeout(t);
+  }, [center, isMobile]);
   useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    if (typeof zoom === 'number' && zoom > 0) params.set('z', String(zoom)); else params.delete('z');
-    const newUrl = `${location.pathname}?${params.toString()}`;
-    history.replaceState({}, '', newUrl);
-  }, [zoom]);
+    const delay = isMobile ? 600 : 200;
+    const t = setTimeout(() => {
+      const params = new URLSearchParams(location.search);
+      if (typeof zoom === 'number' && zoom > 0) params.set('z', String(zoom)); else params.delete('z');
+      const newUrl = `${location.pathname}?${params.toString()}`;
+      history.replaceState({}, '', newUrl);
+    }, delay);
+    return () => clearTimeout(t);
+  }, [zoom, isMobile]);
 
   // Keep basemap in URL
   useEffect(() => {
