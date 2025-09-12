@@ -141,12 +141,18 @@ function decodeStyle(s: string): GeometryStyleOptions {
 }
 
 export default function App() {
+  const SWIPE_THRESHOLD_PX = 35; // horizontal movement required to trigger open/close
   const [serviceUrl, setServiceUrl] = useState<string>(getInitialUrl());
+  const [isMobile, setIsMobile] = useState<boolean>(() => {
+    try { return window.matchMedia('(max-width: 768px)').matches; } catch { return false; }
+  });
   const [selectedMapLayerId, setSelectedMapLayerId] = useState<number | undefined>(undefined);
   const defaultPlaceholder = 'https://sampleserver6.arcgisonline.com/arcgis/rest/services';
   const [inputUrl, setInputUrl] = useState<string>(serviceUrl || '');
   const [bbox, setBbox] = useState<string>('');
-  const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
+    try { return !window.matchMedia('(max-width: 1024px)').matches; } catch { return true; }
+  });
   const [center, setCenter] = useState<string>('');
   const initialCenterZoom = parseCenterParam();
   const [zoom, setZoom] = useState<number>(initialCenterZoom.zoom || 0);
@@ -165,6 +171,11 @@ export default function App() {
   const [hoverFeatureId, setHoverFeatureId] = useState<string | number | null>(null);
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | number | null>(getInitialSelectedId());
   const [isLoadingService, setIsLoadingService] = useState<boolean>(false);
+  // Keep overlay mounted briefly to allow slide-out animation on mobile
+  const [overlayMounted, setOverlayMounted] = useState<boolean>(() => {
+    try { return window.matchMedia('(max-width: 768px)').matches && sidebarOpen; } catch { return false; }
+  });
+  const closeTimerRef = useRef<number | null>(null);
   const resolvedLayer = React.useMemo(() => {
     try { return resolveEsriLayer(serviceUrl, selectedMapLayerId); } catch { return { type: null } as any; }
   }, [serviceUrl, selectedMapLayerId]);
@@ -173,16 +184,26 @@ export default function App() {
   const [whereInput, setWhereInput] = useState<string>(getInitialWhere());
   const layerErrorGateRef = useRef<{ url: string; last: number }>({ url: '', last: 0 });
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
-    const v = Number(localStorage.getItem('sidebarWidth') || '0');
-    if (Number.isFinite(v) && v > 0) return v;
+    const stored = Number(localStorage.getItem('sidebarWidth') || '0');
     try {
       const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
+      const min = vw <= 768 ? 200 : 240;
+      const max = Math.max(min, vw - 100);
+      if (Number.isFinite(stored) && stored > 0) return Math.min(Math.max(stored, min), max);
       const target = Math.round(vw * 0.4);
-      const min = 240; // keep a reasonable minimum default
-      const max = Math.max(240, vw - 100); // ensure at least 100px map area
       return Math.min(Math.max(target, min), max);
     } catch { return 480; }
   });
+  // Track viewport to toggle mobile overlay behavior
+  useEffect(() => {
+    try {
+      const mq = window.matchMedia('(max-width: 768px)');
+      const update = () => setIsMobile(!!mq.matches);
+      mq.addEventListener ? mq.addEventListener('change', update) : (mq as any).addListener(update);
+      update();
+      return () => { mq.removeEventListener ? mq.removeEventListener('change', update) : (mq as any).removeListener(update); };
+    } catch {}
+  }, []);
   // Header "server list" info popover state
   const [showServerList, setShowServerList] = useState<boolean>(false);
   const serverListRef = React.useRef<HTMLDivElement | null>(null);
@@ -278,6 +299,19 @@ export default function App() {
       localStorage.setItem('theme', theme);
     } catch { }
   }, [theme]);
+
+  // When closing on mobile, keep overlay mounted for slide-out animation
+  useEffect(() => {
+    const isMobileNow = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
+    if (!isMobileNow) { setOverlayMounted(false); return; }
+    if (sidebarOpen) {
+      if (closeTimerRef.current) { window.clearTimeout(closeTimerRef.current); closeTimerRef.current = null; }
+      setOverlayMounted(true);
+    } else {
+      if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = window.setTimeout(() => { setOverlayMounted(false); closeTimerRef.current = null; }, 220);
+    }
+  }, [sidebarOpen, isMobile]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -662,7 +696,7 @@ export default function App() {
         </div>
       </header>
       <main className="main" style={{ display: 'flex', minHeight: 0 }}>
-        <section className="map-panel" style={{ display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 }}>
+        <section className={`map-panel${(isMobile && overlayMounted && sidebarOpen) ? ' overlay-dim' : ''}`} style={{ display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 }}>
           <div style={{ flex: '1 1 0%', minHeight: 0, position: 'relative' }}>
             <MapView
               serviceUrl={serviceUrl}
@@ -819,7 +853,7 @@ export default function App() {
                 })()}
               />
             ) : (
-              <FlashButton onClick={() => { setInfoOpen(true); }} ariaLabel="Show more info" title={'Show more info'} style={{ position: 'absolute', left: 10, bottom: 10, zIndex: 1500, padding: '8px 10px', borderRadius: 20, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <FlashButton className="overlay-dimmable" onClick={() => { setInfoOpen(true); }} ariaLabel="Show more info" title={'Show more info'} style={{ position: 'absolute', left: 10, bottom: 10, zIndex: 1500, padding: '8px 10px', borderRadius: 20, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ display: 'inline-block', transform: 'rotate(0deg)' }}>⏵</span>
                 More Info
               </FlashButton>
@@ -846,36 +880,211 @@ export default function App() {
               <span style={{ display: 'inline-block', transform: 'rotate(180deg)' }}>⏵</span>
             </FlashButton>
           )}
+          {/* Persistent edge handle to indicate collapsible sidebar */}
+          {!sidebarOpen && (
+            <button
+              type="button"
+              className="open-tab-handle"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open sidebar"
+              title="Open sidebar"
+            >
+              ⏵
+            </button>
+          )}
+          {/* Edge swipe opener (when sidebar is closed) */}
+          {!sidebarOpen && (
+            <div
+              className="edge-open-zone"
+              onPointerDown={(e) => {
+                try { e.preventDefault(); } catch {}
+                const startX = e.clientX;
+                const startY = e.clientY;
+                const onMove = (ev: PointerEvent) => {
+                  const dx = ev.clientX - startX; // moving left => negative
+                  const dy = ev.clientY - startY;
+                  if (Math.abs(dx) > SWIPE_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
+                    if (dx < 0) setSidebarOpen(true);
+                    cleanup();
+                  }
+                };
+                const onUp = () => cleanup();
+                const cleanup = () => {
+                  window.removeEventListener('pointermove', onMove);
+                  window.removeEventListener('pointerup', onUp);
+                };
+                window.addEventListener('pointermove', onMove, { passive: true } as any);
+                window.addEventListener('pointerup', onUp, { passive: true } as any);
+              }}
+              onTouchStart={(e) => {
+                try { e.preventDefault(); } catch {}
+                const t = e.touches && e.touches[0];
+                if (!t) return;
+                const startX = t.clientX;
+                const startY = t.clientY;
+                const onMove = (ev: TouchEvent) => {
+                  const touch = ev.touches && ev.touches[0];
+                  if (!touch) return;
+                  const dx = touch.clientX - startX; // moving left => negative
+                  const dy = touch.clientY - startY;
+                  if (Math.abs(dx) > SWIPE_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
+                    if (dx < 0) setSidebarOpen(true);
+                    cleanup();
+                  }
+                };
+                const onUp = () => cleanup();
+                const onCancel = () => cleanup();
+                const cleanup = () => {
+                  window.removeEventListener('touchmove', onMove as any);
+                  window.removeEventListener('touchend', onUp as any);
+                  window.removeEventListener('touchcancel', onCancel as any);
+                };
+                window.addEventListener('touchmove', onMove as any, { passive: true });
+                window.addEventListener('touchend', onUp as any, { passive: true });
+                window.addEventListener('touchcancel', onCancel as any, { passive: true });
+              }}
+              style={{ position: 'absolute', right: 0, top: 0, bottom: 0, zIndex: 1400 }}
+              title="Swipe from edge to open"
+            />
+          )}
         </section>
-        {/* Resizer between map and sidebar */}
-        {sidebarOpen && (
+        {/* Resizer between map and sidebar (mouse + touch) */}
+        {sidebarOpen && !isMobile && (
           <div
-            onMouseDown={(e) => {
+            onPointerDown={(e) => {
+              try { e.preventDefault(); } catch {}
               const startX = e.clientX;
               const startWidth = sidebarWidth;
               try { document.body.style.cursor = 'col-resize'; (document.body.style as any).userSelect = 'none'; } catch { }
-              const onMove = (ev: MouseEvent) => {
+              const onMove = (ev: PointerEvent) => {
                 const delta = startX - ev.clientX;
                 const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
-                const min = 240; // sidebar must be at least this wide
+                const min = vw <= 768 ? 200 : 240; // sidebar must be at least this wide
                 const max = Math.max(min, vw - 100); // leave at least 100px for the map
                 const next = Math.max(min, Math.min(max, startWidth + delta));
                 setSidebarWidth(next);
               };
               const onUp = () => {
                 try { document.body.style.cursor = ''; (document.body.style as any).userSelect = ''; } catch { }
-                window.removeEventListener('mousemove', onMove);
-                window.removeEventListener('mouseup', onUp);
+                window.removeEventListener('pointermove', onMove);
+                window.removeEventListener('pointerup', onUp);
               };
-              window.addEventListener('mousemove', onMove);
-              window.addEventListener('mouseup', onUp);
+              window.addEventListener('pointermove', onMove);
+              window.addEventListener('pointerup', onUp);
             }}
-            style={{ width: 6, cursor: 'col-resize', background: 'transparent' }}
+            onTouchStart={(e) => {
+              // Fallback for browsers without Pointer Events
+              try { e.preventDefault(); } catch {}
+              const t = e.touches && e.touches[0];
+              if (!t) return;
+              const startX = t.clientX;
+              const startWidth = sidebarWidth;
+              try { document.body.style.cursor = 'col-resize'; (document.body.style as any).userSelect = 'none'; } catch { }
+              const onMove = (ev: TouchEvent) => {
+                const touch = ev.touches && ev.touches[0];
+                if (!touch) return;
+                const delta = startX - touch.clientX;
+                const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
+                const min = vw <= 768 ? 200 : 240;
+                const max = Math.max(min, vw - 100);
+                const next = Math.max(min, Math.min(max, startWidth + delta));
+                setSidebarWidth(next);
+              };
+              const onUp = () => {
+                try { document.body.style.cursor = ''; (document.body.style as any).userSelect = ''; } catch { }
+                window.removeEventListener('touchmove', onMove);
+                window.removeEventListener('touchend', onUp);
+                window.removeEventListener('touchcancel', onUp);
+              };
+              window.addEventListener('touchmove', onMove, { passive: false });
+              window.addEventListener('touchend', onUp);
+              window.addEventListener('touchcancel', onUp);
+            }}
+            className="sidebar-resizer"
+            style={{ width: 6, cursor: 'col-resize', background: 'transparent', touchAction: 'none' as any }}
             title="Drag to resize sidebar"
           />
         )}
-        {sidebarOpen && (
-          <aside style={{ position: 'relative', width: sidebarWidth, borderLeft: '1px solid var(--border)', background: 'var(--panel)', padding: 12, overflow: 'auto' }}>
+        {/* Mobile overlay scrim */}
+        {isMobile && overlayMounted ? (
+          <div className={`overlay-scrim${sidebarOpen ? ' is-open' : ''}`} onClick={() => setSidebarOpen(false)} aria-label="Close sidebar" />
+        ) : null}
+        {(isMobile ? overlayMounted : sidebarOpen) && (
+          <aside
+            className={isMobile ? `sidebar-overlay${sidebarOpen ? ' is-open' : ''}` : undefined}
+            style={isMobile ? (
+              { position: 'absolute', right: 0, top: 0, bottom: 0, width: '85vw', maxWidth: '90vw', minWidth: 200, borderLeft: '1px solid var(--border)', background: 'var(--panel)', padding: 12, overflow: 'auto' }
+            ) : (
+              { position: 'relative', width: sidebarWidth, borderLeft: '1px solid var(--border)', background: 'var(--panel)', padding: 12, overflow: 'auto' }
+            )}
+          >
+            {/* Mobile close button */}
+            <FlashButton
+              onClick={() => setSidebarOpen(false)}
+              ariaLabel="Hide sidebar"
+              title={'Hide sidebar'}
+              className="sidebar-close-btn"
+              style={{ position: 'absolute', right: 8, top: 8, zIndex: 20 }}
+            >
+              ✕
+            </FlashButton>
+            {/* Edge swipe closer (inside sidebar, near left edge) */}
+            <div
+              className="sidebar-swipe-close-zone"
+              onPointerDown={(e) => {
+                try { e.preventDefault(); } catch {}
+                const startX = e.clientX;
+                const startY = e.clientY;
+                try { (document.body.style as any).userSelect = 'none'; } catch {}
+                const onMove = (ev: PointerEvent) => {
+                  const dx = ev.clientX - startX; // moving right => positive
+                  const dy = ev.clientY - startY;
+                  if (Math.abs(dx) > SWIPE_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
+                    if (dx > 0) setSidebarOpen(false);
+                    cleanup();
+                  }
+                };
+                const onUp = () => cleanup();
+                const cleanup = () => {
+                  try { (document.body.style as any).userSelect = ''; } catch {}
+                  window.removeEventListener('pointermove', onMove);
+                  window.removeEventListener('pointerup', onUp);
+                };
+                window.addEventListener('pointermove', onMove);
+                window.addEventListener('pointerup', onUp);
+              }}
+              onTouchStart={(e) => {
+                try { e.preventDefault(); } catch {}
+                const t = e.touches && e.touches[0];
+                if (!t) return;
+                const startX = t.clientX;
+                const startY = t.clientY;
+                try { (document.body.style as any).userSelect = 'none'; } catch {}
+                const onMove = (ev: TouchEvent) => {
+                  const touch = ev.touches && ev.touches[0];
+                  if (!touch) return;
+                  const dx = touch.clientX - startX; // moving right => positive
+                  const dy = touch.clientY - startY;
+                  if (Math.abs(dx) > SWIPE_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
+                    if (dx > 0) setSidebarOpen(false);
+                    cleanup();
+                  }
+                };
+                const onUp = () => cleanup();
+                const onCancel = () => cleanup();
+                const cleanup = () => {
+                  try { (document.body.style as any).userSelect = ''; } catch {}
+                  window.removeEventListener('touchmove', onMove as any);
+                  window.removeEventListener('touchend', onUp as any);
+                  window.removeEventListener('touchcancel', onCancel as any);
+                };
+                window.addEventListener('touchmove', onMove as any, { passive: true });
+                window.addEventListener('touchend', onUp as any, { passive: true });
+                window.addEventListener('touchcancel', onCancel as any, { passive: true });
+              }}
+              style={{ position: 'absolute', left: 0, top: 0, bottom: 0, zIndex: 10, touchAction: 'none' as any }}
+              title="Swipe to close sidebar"
+            />
             <Sidebar serviceUrl={serviceUrl} onSelectServiceUrl={setServiceUrl}
               serviceMeta={serviceMeta}
               layerMeta={layerMeta}

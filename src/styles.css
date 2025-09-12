@@ -62,6 +62,112 @@ body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, A
   background: var(--panel); 
   position: relative;
 }
+
+/* Sidebar resizer: larger touch target on mobile */
+.sidebar-resizer {
+  position: relative;
+  touch-action: none; /* allow horizontal drag without scrolling */
+  z-index: 5;
+}
+.sidebar-resizer::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px;
+  height: 36px;
+  background: var(--border);
+  border-radius: 2px;
+}
+@media (hover: hover) {
+  .sidebar-resizer:hover::after { background: var(--muted); }
+}
+@media (max-width: 768px) {
+  .sidebar-resizer { width: 14px !important; }
+}
+
+/* Edge swipe zones */
+.edge-open-zone {
+  touch-action: none; /* capture horizontal swipe */
+  width: 16px;
+}
+.sidebar-swipe-close-zone {
+  touch-action: none;
+  width: 20px;
+}
+@media (max-width: 768px) {
+  .edge-open-zone { width: 24px; }
+  .sidebar-swipe-close-zone { width: 28px; }
+}
+
+/* Mobile-only close button inside sidebar */
+.sidebar-close-btn { display: none; }
+@media (max-width: 768px) {
+  .sidebar-close-btn { display: inline-flex; }
+}
+
+/* Overlay mode: scrim and slide-in sidebar */
+.overlay-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.35);
+  z-index: 9;
+  opacity: 0;
+  transition: opacity 160ms ease;
+  pointer-events: none;
+}
+.overlay-scrim.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.sidebar-overlay {
+  transform: translateX(100%);
+  transition: transform 200ms ease;
+  z-index: 10;
+  box-shadow: -8px 0 16px rgba(0,0,0,0.25);
+}
+.sidebar-overlay.is-open {
+  transform: translateX(0);
+}
+
+/* Edge handle to indicate collapsed sidebar */
+.open-tab-handle {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1450;
+  width: 28px;
+  height: 52px;
+  border: 1px solid var(--border);
+  border-right: none;
+  background: var(--panel);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-top-left-radius: 8px;
+  border-bottom-left-radius: 8px;
+  cursor: pointer;
+  box-shadow: -2px 0 6px rgba(0,0,0,0.12);
+  animation: nudge 2.2s ease-in-out infinite;
+}
+@keyframes nudge {
+  0%, 60%, 100% { transform: translate(2px, -50%); }
+  30% { transform: translate(0, -50%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .open-tab-handle { animation: none; }
+}
+
+/* Dim map controls behind overlay */
+.map-panel.overlay-dim .leaflet-control-container { opacity: 0.35; pointer-events: none; transition: opacity 160ms ease; }
+.map-panel.overlay-dim .overlay-dimmable { opacity: 0.35; pointer-events: none; transition: opacity 160ms ease; }
+.map-panel.overlay-dim .open-tab-handle { opacity: 0; pointer-events: none; }
+
+/* Resizer active feedback */
+.sidebar-resizer:active::after { background: var(--text); }
 .data-table-scroll { 
   font-variant-numeric: tabular-nums;
   overflow: auto;
