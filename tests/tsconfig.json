@@ -1,0 +1,24 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "./dist",
+    "rootDir": "..",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "ignoreDeprecations": "6.0",
+    "target": "ES2020",
+    "jsx": "react-jsx",
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true
+  },
+  "include": [
+    "../src/lib/ids.ts",
+    "../src/lib/arcgis.ts",
+    "../src/lib/arcgisDescription.ts",
+    "../src/lib/whereBuilder.ts",
+    "../src/lib/mapMath.ts",
+    "./**/*.ts"
+  ]
+}
