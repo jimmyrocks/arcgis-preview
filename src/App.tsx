@@ -11,7 +11,7 @@ import FlashButton from './components/ui/FlashButton';
 import MoreInfoOverlay from './components/MoreInfoOverlay';
 import Sidebar, { type ExportProgress } from './components/sidebar/components/Sidebar';
 import SelectTab, { type SelectTabHandle } from './components/sidebar/tabs/SelectTab';
-import type { GeometryStyleOptions, AttributeStyleOptions, StyleMode } from './lib/styleOptions';
+import type { GeometryStyleOptions, AttributeStyleOptions, StyleMode, CategoryStop, NumericStop } from './lib/styleOptions';
 import { defaultStyleOptions } from './lib/styleOptions';
 import { classifyCategorical, classifyNumeric, inferSubMode } from './lib/classifyField';
 import { QUALITATIVE_PALETTES, SEQUENTIAL_PALETTES } from './lib/colorPalettes';
@@ -179,29 +179,142 @@ function getInitialStyleOptions(): GeometryStyleOptions {
   } catch { return { ...defaultStyleOptions }; }
 }
 
+function getInitialAttributeStyle(): AttributeStyleOptions {
+  try {
+    const raw = new URLSearchParams(location.search).get('astyle');
+    if (!raw) return {};
+    return decodeAttributeStyle(raw);
+  } catch { return {}; }
+}
+
+// --- Geometry style URL (de)serialization -----------------------------------
+// Validate one style section (point/line/polygon/label) against the matching
+// defaults: only known keys whose value type matches the default are kept, so a
+// hand-edited or truncated URL can't inject junk into MapLibre. Missing keys
+// fall back to defaults, which also lets us store only the changed properties.
+function sanitizeStyleSection<T extends Record<string, any>>(input: any, defaults: T): T {
+  const out: any = { ...defaults };
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    for (const key of Object.keys(defaults)) {
+      const dv = (defaults as any)[key];
+      const iv = input[key];
+      if (iv === undefined || iv === null) continue;
+      if (typeof iv === typeof dv && (typeof iv !== 'number' || Number.isFinite(iv))) out[key] = iv;
+    }
+  }
+  return out;
+}
+
+function sanitizeGeometryStyle(obj: any): GeometryStyleOptions {
+  return {
+    point: sanitizeStyleSection(obj?.point, defaultStyleOptions.point as Record<string, any>),
+    line: sanitizeStyleSection(obj?.line, defaultStyleOptions.line as Record<string, any>),
+    polygon: sanitizeStyleSection(obj?.polygon, defaultStyleOptions.polygon as Record<string, any>),
+    label: sanitizeStyleSection(obj?.label, defaultStyleOptions.label as Record<string, any>),
+  };
+}
+
+// Keep only the properties that differ from the defaults so the `style` param
+// stays short and readable (e.g. {"polygon":{"fillColor":"#ff0000"}}). Decoding
+// merges back onto defaults, so dropped keys round-trip correctly.
+function diffStyleSection(opts: any, defaults: Record<string, any>): Record<string, any> | undefined {
+  if (!opts || typeof opts !== 'object') return undefined;
+  const out: Record<string, any> = {};
+  for (const key of Object.keys(defaults)) {
+    const ov = opts[key];
+    if (ov !== undefined && ov !== defaults[key]) out[key] = ov;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 function encodeStyle(opts: GeometryStyleOptions): string {
-  // Roll back to plain JSON encoding in URL
-  try { return JSON.stringify(opts); } catch { return JSON.stringify(defaultStyleOptions); }
+  // Returns '{}' when nothing differs from defaults, so the caller can omit the
+  // param entirely rather than dump a full default blob into the URL.
+  try {
+    const min: Record<string, any> = {};
+    const point = diffStyleSection(opts?.point, defaultStyleOptions.point as Record<string, any>);
+    const line = diffStyleSection(opts?.line, defaultStyleOptions.line as Record<string, any>);
+    const polygon = diffStyleSection(opts?.polygon, defaultStyleOptions.polygon as Record<string, any>);
+    const label = diffStyleSection(opts?.label, defaultStyleOptions.label as Record<string, any>);
+    if (point) min.point = point;
+    if (line) min.line = line;
+    if (polygon) min.polygon = polygon;
+    if (label) min.label = label;
+    return JSON.stringify(min);
+  } catch { return '{}'; }
 }
 
 function decodeStyle(s: string): GeometryStyleOptions {
-  // Back-compat: allow raw JSON string
+  // Accept raw JSON (current format) or legacy base64-encoded JSON, then
+  // validate/merge onto defaults via sanitizeGeometryStyle.
+  let obj: any = null;
   const looksLikeJson = s.trim().startsWith('{') || s.trim().startsWith('[');
   if (looksLikeJson) {
-    try { return JSON.parse(s) as GeometryStyleOptions; } catch { return { ...defaultStyleOptions }; }
+    try { obj = JSON.parse(s); } catch { obj = null; }
+  } else {
+    try {
+      let b64 = s.replace(/-/g, '+').replace(/_/g, '/');
+      const pad = b64.length % 4 ? 4 - (b64.length % 4) : 0;
+      if (pad) b64 += '='.repeat(pad);
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      obj = JSON.parse(new TextDecoder().decode(bytes));
+    } catch { obj = null; }
   }
+  return sanitizeGeometryStyle(obj);
+}
+
+// --- Attribute (color-by-field) style URL (de)serialization -----------------
+function encodeAttributeStyle(opts: AttributeStyleOptions): string {
+  // Own param so it stays independent of the geometry `style`. `count` is
+  // derived at classification time, so drop it to keep the URL compact
+  // (categorical fields can have many stops).
   try {
-    let b64 = s.replace(/-/g, '+').replace(/_/g, '/');
-    const pad = b64.length % 4 ? 4 - (b64.length % 4) : 0;
-    if (pad) b64 += '='.repeat(pad);
-    const binary = atob(b64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const json = new TextDecoder().decode(bytes);
-    const obj = JSON.parse(json);
-    if (obj && typeof obj === 'object') return obj as GeometryStyleOptions;
-  } catch {}
-  return { ...defaultStyleOptions };
+    const rule = opts?.rule;
+    if (!rule) return '';
+    if (rule.kind === 'categorical') {
+      const stops = (rule.stops || []).map((stop) => {
+        const clone = { ...stop };
+        delete clone.count;
+        return clone;
+      });
+      return JSON.stringify({ rule: { ...rule, stops } });
+    }
+    return JSON.stringify({ rule });
+  } catch { return ''; }
+}
+
+function sanitizeAttributeStyle(obj: any): AttributeStyleOptions {
+  const rule = obj?.rule;
+  if (!rule || typeof rule !== 'object') return {};
+  const field = typeof rule.field === 'string' ? rule.field : '';
+  if (!field || !Array.isArray(rule.stops)) return {};
+  const fallbackColor = typeof rule.fallbackColor === 'string' ? rule.fallbackColor : '#aaaaaa';
+  if (rule.kind === 'categorical') {
+    const stops: CategoryStop[] = rule.stops
+      .filter((st: any) => st && typeof st === 'object' && typeof st.color === 'string')
+      .map((st: any) => ({
+        value: (typeof st.value === 'string' || typeof st.value === 'number' || st.value === null) ? st.value : null,
+        color: st.color,
+        ...(typeof st.label === 'string' ? { label: st.label } : {}),
+        enabled: typeof st.enabled === 'boolean' ? st.enabled : true,
+      }));
+    if (!stops.length) return {};
+    return { rule: { kind: 'categorical', field, channel: 'color', stops, fallbackColor } };
+  }
+  if (rule.kind === 'numeric') {
+    const stops: NumericStop[] = rule.stops
+      .filter((st: any) => st && typeof st === 'object' && Number.isFinite(st.value) && typeof st.color === 'string')
+      .map((st: any) => ({ value: st.value, color: st.color }));
+    if (!stops.length) return {};
+    return { rule: { kind: 'numeric', field, channel: 'color', stops, fallbackColor } };
+  }
+  return {};
+}
+
+function decodeAttributeStyle(s: string): AttributeStyleOptions {
+  try { return sanitizeAttributeStyle(JSON.parse(s)); } catch { return {}; }
 }
 
 export default function App() {
@@ -553,7 +666,7 @@ export default function App() {
   // Simple style state for FeatureLayers (URL sharing enabled)
   const [styleMode, setStyleMode] = useState<StyleMode>(getInitialStyleMode());
   const [styleOptions, setStyleOptions] = useState<GeometryStyleOptions>(getInitialStyleOptions());
-  const [attributeStyle, setAttributeStyle] = useState<AttributeStyleOptions>({});
+  const [attributeStyle, setAttributeStyle] = useState<AttributeStyleOptions>(getInitialAttributeStyle());
 
   function handleStyleByField(fieldName: string) {
     const meta = (layerMeta?.fields as any[] | undefined)?.find((f: any) => f?.name === fieldName);
@@ -608,12 +721,21 @@ export default function App() {
         if (activeTab) params.set('tab', activeTab);
         else params.delete('tab');
 
-        if (styleMode === 'custom') {
-          params.set('styleMode', 'custom');
-          try { params.set('style', encodeStyle(styleOptions)); } catch {}
+        if (styleMode === 'custom' || styleMode === 'attribute') {
+          params.set('styleMode', styleMode);
+          // Only carry `style` when something actually differs from the
+          // defaults — keeps shared URLs short and readable.
+          const s = encodeStyle(styleOptions);
+          if (s && s !== '{}') params.set('style', s);
+          else params.delete('style');
+          // Attribute mode also carries the color-by-field rule in `astyle`.
+          const astyle = styleMode === 'attribute' ? encodeAttributeStyle(attributeStyle) : '';
+          if (astyle) params.set('astyle', astyle);
+          else params.delete('astyle');
         } else {
           params.delete('styleMode');
           params.delete('style');
+          params.delete('astyle');
         }
 
         const search = params.toString();
@@ -629,7 +751,7 @@ export default function App() {
     }, delay);
 
     return () => window.clearTimeout(timeoutId);
-  }, [activeTab, basemap, bbox, center, isMobile, selectedFeatureId, serviceUrl, styleMode, styleOptions, where, zoom]);
+  }, [activeTab, basemap, bbox, center, isMobile, selectedFeatureId, serviceUrl, styleMode, styleOptions, attributeStyle, where, zoom]);
 
   // Keep header WHERE input mirrored with state
   useEffect(() => { setWhereInput(where || '1=1'); }, [where]);
@@ -703,7 +825,8 @@ export default function App() {
 
   // FlashButton and CopyButton moved to components/ui
 
-  // Reset layer selection when URL changes
+  // Derive the selected sublayer from the URL. Runs on mount too, so a shared /
+  // restored link initializes the right layer.
   useEffect(() => {
     try {
       const info = getRestServiceUrlInfo(serviceUrl);
@@ -717,7 +840,17 @@ export default function App() {
     } catch {
       setSelectedMapLayerId(undefined);
     }
-    // reset details when URL changes; MapView will repopulate
+  }, [serviceUrl]);
+
+  // Reset view + filters + styling when the user actually switches layer/service.
+  // Guarded against the initial mount (and StrictMode's double-invoke) by
+  // comparing the previous URL, so URL-restored state — where, selected feature,
+  // attribute style — survives a shared link instead of being wiped on load.
+  const prevServiceUrlRef = useRef<string>(serviceUrl);
+  useEffect(() => {
+    if (prevServiceUrlRef.current === serviceUrl) return;
+    prevServiceUrlRef.current = serviceUrl;
+    // reset details; MapView will repopulate
     setServiceMeta(null);
     setLayerMeta(null);
     setFeatureCount(null);
@@ -726,8 +859,11 @@ export default function App() {
     setSelectedFeatureId(null);
     setExportProgress(null);
     setRenderStatus('idle');
+    // Drop color-by-field styling: its rule's field belongs to the previous
+    // layer and won't exist on the new one. Fall back to 'custom' (not 'server')
+    // so any geometry tweaks the user made are preserved.
     setAttributeStyle({});
-    // Reset loading states
+    setStyleMode((m) => (m === 'attribute' ? 'custom' : m));
     setIsLoadingService(false);
     // Reset WHERE filter when switching layers/services
     try {
