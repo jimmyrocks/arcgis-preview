@@ -2,9 +2,9 @@
 #
 # Build the production bundle and stage it on the gh-pages branch, locally.
 #
-# GitHub Pages serves this project from the /docs folder of the gh-pages
-# branch (https://loc8.us/arcgis-preview/). This script builds maplibre's
-# source into docs/ (Vite's outDir) and copies it into gh-pages:/docs via a
+# GitHub Pages serves this project from the ROOT of the gh-pages branch
+# (https://loc8.us/arcgis-preview/). This script builds maplibre's source
+# into docs/ (Vite's outDir) and copies it to the gh-pages branch root via a
 # throwaway git worktree, then commits on gh-pages. It intentionally does
 # NOT push — the deploy flow is: run this, then
 #   git push gitea gh-pages   &&   git push origin gh-pages
@@ -27,24 +27,25 @@ if [ ! -f "$ROOT/docs/index.html" ]; then
 fi
 
 WT="$(mktemp -d -t ghpages-XXXXXX)"
-cleanup() { git worktree remove --force "$WT" >/dev/null 2>&1 || true; }
+cleanup() { cd "$ROOT"; git worktree remove --force "$WT" >/dev/null 2>&1 || git worktree prune >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 echo ">> Checking out gh-pages into a worktree ..."
 git worktree add --force "$WT" gh-pages >/dev/null
 
-echo ">> Replacing gh-pages:/docs with the fresh build ..."
-rm -rf "$WT/docs"
-cp -R "$ROOT/docs" "$WT/docs"
+echo ">> Replacing gh-pages contents with the fresh build ..."
+# Clear the branch (keeps the .git worktree pointer) so old hashed assets
+# don't accumulate, then drop the new build at the branch root.
+git -C "$WT" rm -rfq . >/dev/null 2>&1 || true
+cp -R "$ROOT/docs/." "$WT/"
 
-cd "$WT"
-git add -A docs
-if git diff --cached --quiet; then
-  echo ">> No changes to deploy — gh-pages/docs already up to date."
+git -C "$WT" add -A
+if git -C "$WT" diff --cached --quiet; then
+  echo ">> No changes to deploy — gh-pages already up to date."
   exit 0
 fi
 
-git commit -q -m "Deploy site from ${SRC_BRANCH}@${SRC_SHA} ($(date -u +%Y-%m-%dT%H:%MZ))"
+git -C "$WT" commit -q -m "Deploy site from ${SRC_BRANCH}@${SRC_SHA} ($(date -u +%Y-%m-%dT%H:%MZ))"
 echo ">> Committed build to gh-pages (local only)."
 echo ">> Push when ready:"
 echo "     git push gitea gh-pages && git push origin gh-pages"

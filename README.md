@@ -18,15 +18,15 @@ Quick start
 
 Deploy
 
-The site is hosted on GitHub Pages, served from the `/docs` folder of the
+The site is hosted on GitHub Pages, served from the **root** of the
 `gh-pages` branch (live at https://loc8.us/arcgis-preview/). Source lives on
 `maplibre`; built output is never committed there (`docs/` is gitignored).
 
 To publish:
 
 1) From `maplibre`, run `npm run deploy`. This builds into `docs/` and copies
-   it into `gh-pages:/docs` via a throwaway git worktree, then commits on
-   `gh-pages` — **locally only, it does not push.**
+   it to the `gh-pages` branch root via a throwaway git worktree, then commits
+   on `gh-pages` — **locally only, it does not push.**
 2) Push to the private server first, then mirror to GitHub:
    `git push gitea gh-pages && git push origin gh-pages`
 
