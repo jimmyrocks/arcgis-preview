@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
+    "deploy": "bash scripts/deploy.sh",
     "test": "tsc -p tests/tsconfig.json && node -e \"require('fs').writeFileSync('tests/dist/package.json','{\\n \\\"name\\\": \\\"arcgis-preview-tests\\\",\\n \\\"version\\\": \\\"0.0.0\\\",\\n \\\"private\\\": true,\\n \\\"type\\\": \\\"commonjs\\\"\\n}');\" && node tests/dist/tests/simple.test.js"
   },
   "dependencies": {
