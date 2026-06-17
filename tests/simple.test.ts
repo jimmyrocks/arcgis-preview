@@ -5,6 +5,7 @@ import { buildArcgisJsonUrl, canonicalizeArcgisRestUrl, coerceArcgisRestServices
 import { getLayerDescription, htmlToPlainText, summarizePlainText } from '../src/lib/arcgisDescription';
 import { buildWhereCondition, formatWhereValue, joinWhereCondition } from '../src/lib/whereBuilder';
 import { buildColorExpression, buildCustomLayers } from '../src/lib/esriStyle';
+import { dedupeFeatures } from '../src/lib/dedupeFeatures';
 import {
   buildKmlMarkerIconDataUri,
   buildKmlStyleHint,
@@ -57,6 +58,23 @@ function test_mapMath() {
     const exp = expectedApprox(c.z, c.lat);
     assertEqual(got, exp, `approxPrecisionMetersFromZoomLat: ${c.name}`);
   }
+}
+
+function test_dedupeFeatures() {
+  const features: any[] = [
+    { type: 'Feature', id: 1, properties: { OBJECTID: 1, name: 'A' }, geometry: { type: 'Point', coordinates: [0, 0] } },
+    { type: 'Feature', id: 1, properties: { OBJECTID: 1, name: 'A' }, geometry: { type: 'Point', coordinates: [0, 0] } },
+    { type: 'Feature', properties: { name: 'No id', __zoom: 12 }, geometry: { type: 'Point', coordinates: [1, 1] } },
+    { type: 'Feature', properties: { __zoom: 15, name: 'No id' }, geometry: { type: 'Point', coordinates: [1, 1] } },
+    { type: 'Feature', id: 2, properties: { OBJECTID: 2, name: 'B' }, geometry: { type: 'Point', coordinates: [2, 2] } },
+    { type: 'Feature', id: 3, properties: { OBJECTID: 3, name: 'C' }, geometry: { type: 'Point', coordinates: [2, 2] } }
+  ];
+  const result = dedupeFeatures(features);
+  assertEqual(result.features.length, 4, 'dedupeFeatures: keeps unique feature set');
+  assertEqual(result.summary.duplicateIdentityCount, 1, 'dedupeFeatures: counts duplicate ids');
+  assertEqual(result.summary.duplicateNoIdCount, 1, 'dedupeFeatures: counts duplicate no-id fingerprints');
+  assertEqual(result.summary.repeatedGeometryCount, 1, 'dedupeFeatures: detects repeated geometry across ids');
+  assertDeepEqual(result.summary.suspectedDuplicateIds, [3], 'dedupeFeatures: marks later repeated-geometry ids as hide candidates');
 }
 
 function test_arcgisUrlHelpers() {
@@ -163,6 +181,23 @@ function test_esriStyle() {
     'buildColorExpression: categorical'
   );
 
+  const groupedCategorical = buildColorExpression({
+    kind: 'categorical',
+    field: 'status',
+    channel: 'color',
+    fallbackColor: '#999999',
+    stops: [
+      { value: 'open', color: '#00ff00', enabled: false },
+      { value: 'closed', color: '#ff0000', enabled: false },
+      { value: null, color: '#0000ff', enabled: false }
+    ]
+  });
+  assertEqual(
+    groupedCategorical,
+    '#0000ff',
+    'buildColorExpression: all grouped categories use other color'
+  );
+
   const numeric = buildColorExpression({
     kind: 'numeric',
     field: 'score',
@@ -241,6 +276,15 @@ function test_esriStyle() {
   assertEqual((iconPointLayers[0] as any).layout['icon-rotation-alignment'], 'map', 'buildCustomLayers: point icon rotation alignment');
   assertEqual((iconPointLayers[0] as any).layout['icon-pitch-alignment'], 'viewport', 'buildCustomLayers: point icon pitch alignment');
   assertEqual((iconPointLayers[0] as any).paint['icon-color'], '#222222', 'buildCustomLayers: point icon color');
+
+  const defaultIconPointLayers = buildCustomLayers(
+    'arc-source',
+    'point',
+    { point: { symbol: 'icon' } },
+    'test-default-icon-style'
+  );
+  assertEqual((defaultIconPointLayers[0] as any).layout['icon-allow-overlap'], true, 'buildCustomLayers: default point icon allow overlap');
+  assertEqual((defaultIconPointLayers[0] as any).paint['icon-opacity'], 1, 'buildCustomLayers: default point icon opacity');
 }
 
 function test_kmlStyle() {
@@ -350,13 +394,14 @@ function run() {
   const start = Date.now();
   test_getFeatureId();
   test_mapMath();
+  test_dedupeFeatures();
   test_arcgisUrlHelpers();
   test_arcgisDescriptions();
   test_whereBuilder();
   test_esriStyle();
   test_kmlStyle();
   const dur = Date.now() - start;
-  console.log(`OK - 7 suites passed in ${dur}ms`);
+  console.log(`OK - 8 suites passed in ${dur}ms`);
 }
 
 run();

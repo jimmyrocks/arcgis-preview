@@ -79,6 +79,7 @@ export type SidebarProps = {
   fallbackReason?: string;
   layerDataRows?: any[]; // future: rows coming from the map, not queried
   featureCollection?: any;
+  styleFeatureCollection?: any;
   onRowHover?: (id: string | number | null) => void;
   onRowClick?: (id: string | number | null) => void;
   onRowDoubleClick?: (id: string | number | null) => void;
@@ -113,7 +114,7 @@ export type SidebarProps = {
   onBrowseService?: (serviceKey: string) => void;
 };
 
-export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent, onZoomToLayer, serviceMeta, layerMeta, isGroupLayer = false, featureCount, whereValue, whereDraftValue, onEditWhere, onCommitWhere, onClearWhere, fallbackReason, layerDataRows, featureCollection, downloadedExtent, selectedFeatureId, onFlashFeature, onZoomToFeature, onClearSelection, onRowHover, onRowClick, onRowDoubleClick, highlightId, disableQuery = false, disableData = false, disableDownload = false, disableStyle = false, zoom, bbox, center, activeTabName, onTabChange, styleMode = 'server', styleOptions = {}, onStyleModeChange, onStyleOptionsChange, attributeStyle, onAttributeStyleChange, onStyleByField, isLoadingService = false, exportProgress = null, onExportProgress, renderStatus = 'idle', renderedFeatureCount = 0, renderMode = 'feature', layerOpacity = 1, onLayerOpacityChange, onFocusFinder, onBrowseServer, onBrowseFolder, onBrowseService }: SidebarProps) {
+export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent, onZoomToLayer, serviceMeta, layerMeta, isGroupLayer = false, featureCount, whereValue, whereDraftValue, onEditWhere, onCommitWhere, onClearWhere, fallbackReason, layerDataRows, featureCollection, styleFeatureCollection, downloadedExtent, selectedFeatureId, onFlashFeature, onZoomToFeature, onClearSelection, onRowHover, onRowClick, onRowDoubleClick, highlightId, disableQuery = false, disableData = false, disableDownload = false, disableStyle = false, zoom, bbox, center, activeTabName, onTabChange, styleMode = 'server', styleOptions = {}, onStyleModeChange, onStyleOptionsChange, attributeStyle, onAttributeStyleChange, onStyleByField, isLoadingService = false, exportProgress = null, onExportProgress, renderStatus = 'idle', renderedFeatureCount = 0, renderMode = 'feature', layerOpacity = 1, onLayerOpacityChange, onFocusFinder, onBrowseServer, onBrowseFolder, onBrowseService }: SidebarProps) {
   const [activeTab, setActiveTab] = useState<'select' | 'details' | 'query' | 'data' | 'download' | 'style'>(activeTabName || 'select');
   React.useEffect(() => {
     if (!activeTabName) return;
@@ -250,7 +251,7 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
             attributeStyle={attributeStyle}
             onAttributeStyleChange={onAttributeStyleChange}
             fields={(layerMeta?.fields as any) ?? undefined}
-            featureCollection={featureCollection as any}
+            featureCollection={(styleFeatureCollection ?? featureCollection) as any}
           />
           </section>
         ) : null}

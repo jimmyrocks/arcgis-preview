@@ -196,7 +196,7 @@ export default function AttributeStyleEditor({ fields, rule, paletteId, featureC
 
       {/* Class list */}
       {rule?.kind === 'categorical' && (
-        <CategoricalClassList rule={rule} onRuleChange={onRuleChange} />
+        <CategoricalClassList rule={rule} features={features} onRuleChange={onRuleChange} />
       )}
       {rule?.kind === 'numeric' && (
         <NumericClassList rule={rule} onRuleChange={onRuleChange} />
@@ -228,46 +228,159 @@ export default function AttributeStyleEditor({ fields, rule, paletteId, featureC
   );
 }
 
-function CategoricalClassList({ rule, onRuleChange }: { rule: AttributeStyleRule & { kind: 'categorical' }; onRuleChange: (r: AttributeStyleRule) => void }) {
+function CategoricalClassList({ rule, features, onRuleChange }: { rule: AttributeStyleRule & { kind: 'categorical' }; features: any[]; onRuleChange: (r: AttributeStyleRule) => void }) {
   function updateStop(i: number, patch: Partial<CategoryStop>) {
-    const stops = rule.stops.map((s, idx) => idx === i ? { ...s, ...patch } : s);
+    const stops = rule.stops
+      .map((s, idx) => idx === i ? { ...s, ...patch } : s)
+      .map((s) => s.value === null ? { ...s, enabled: true } : s);
     onRuleChange({ ...rule, stops });
   }
+
+  const groupedOtherCount = getGroupedOtherCount(rule, features);
+  const hasGroupedValues = rule.stops.some((stop) => stop.value !== null && !stop.enabled);
+  const liveCounts = React.useMemo(() => getCategoryCounts(rule.field, features), [rule.field, features]);
 
   return (
     <div style={{ display: 'grid', gap: 4 }}>
       <div className="u-label">Classes</div>
       <div style={{ maxHeight: 240, overflowY: 'auto', display: 'grid', gap: 3 }}>
-        {rule.stops.map((stop, i) => (
-          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, opacity: stop.enabled ? 1 : 0.45 }}>
+        {rule.stops.map((stop, i) => {
+          const isOther = stop.value === null;
+          const label = isOther
+            ? (hasGroupedValues ? 'Other / grouped' : stop.label ?? 'Other / No data')
+            : String(stop.value);
+          const liveCount = isOther ? groupedOtherCount : liveCounts.get(categoryKey(stop.value));
+          const count = liveCount ?? stop.count;
+          return (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, opacity: stop.enabled || isOther ? 1 : 0.48 }}>
             <input
               type="color"
               value={stop.color}
               onChange={e => updateStop(i, { color: e.target.value })}
-              style={{ width: 22, height: 22, padding: 0, border: 'none', cursor: 'pointer', borderRadius: 3, background: 'none' }}
-              title="Change color"
+              disabled={!stop.enabled && !isOther}
+              style={{ width: 22, height: 22, padding: 0, border: 'none', cursor: stop.enabled || isOther ? 'pointer' : 'not-allowed', borderRadius: 3, background: 'none' }}
+              title={isOther ? 'Change catch-all color' : stop.enabled ? 'Change color' : 'Grouped classes use the Other color'}
             />
             <span style={{ fontSize: 11, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)', display: 'flex', gap: 4, alignItems: 'baseline' }}>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {stop.value === null ? (stop.label ?? 'Other / No data') : String(stop.value)}
+                {label}
               </span>
-              {stop.count != null && (
-                <span style={{ color: 'var(--muted)', fontSize: 10, flexShrink: 0 }}>({stop.count.toLocaleString()})</span>
+              {count != null && (
+                <span style={{ color: 'var(--muted)', fontSize: 10, flexShrink: 0 }}>({count.toLocaleString()})</span>
               )}
             </span>
-            <button
-              type="button"
-              onClick={() => updateStop(i, { enabled: !stop.enabled })}
-              title={stop.enabled ? 'Hide this class' : 'Show this class'}
-              style={{ fontSize: 10, padding: '1px 5px', borderRadius: 3, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--muted)', cursor: 'pointer' }}
-            >
-              {stop.enabled ? 'on' : 'off'}
-            </button>
+            {isOther ? (
+              <span
+                title="No data, unlisted values, and grouped classes use this color"
+                style={{ fontSize: 10, padding: '2px 6px', borderRadius: 9999, border: '1px solid var(--border)', background: 'var(--panel-subtle)', color: 'var(--muted)' }}
+              >
+                other
+              </span>
+            ) : (
+              <ClassSwitch
+                enabled={stop.enabled}
+                onToggle={() => updateStop(i, { enabled: !stop.enabled })}
+              />
+            )}
           </div>
-        ))}
+        );})}
       </div>
     </div>
   );
+}
+
+function ClassSwitch({ enabled, onToggle }: { enabled: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      onClick={onToggle}
+      title={enabled ? 'On: class uses its own color' : 'Off: class uses the Other color'}
+      style={{
+        width: 46,
+        height: 20,
+        position: 'relative',
+        borderRadius: 9999,
+        border: `1px solid ${enabled ? 'var(--accent, #5b8cff)' : 'var(--border)'}`,
+        background: enabled ? 'rgba(91, 140, 255, 0.22)' : 'var(--panel-subtle)',
+        color: enabled ? 'var(--accent, #5b8cff)' : 'var(--muted)',
+        cursor: 'pointer',
+        padding: 0,
+        boxShadow: enabled ? 'inset 0 0 0 1px rgba(91, 140, 255, 0.12)' : 'inset 0 1px 2px rgba(0,0,0,0.08)',
+        transition: 'background-color 140ms ease, border-color 140ms ease, color 140ms ease',
+        flexShrink: 0,
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          top: 2,
+          left: enabled ? 24 : 2,
+          width: 14,
+          height: 14,
+          borderRadius: 9999,
+          background: enabled ? 'var(--accent, #5b8cff)' : 'var(--muted)',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.24)',
+          transition: 'left 140ms ease, background-color 140ms ease',
+        }}
+      />
+      <span
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: enabled ? 'flex-start' : 'flex-end',
+          padding: enabled ? '0 0 0 7px' : '0 6px 0 0',
+          fontSize: 9,
+          fontWeight: 700,
+          lineHeight: 1,
+          textTransform: 'uppercase',
+        }}
+      >
+        {enabled ? 'on' : 'off'}
+      </span>
+    </button>
+  );
+}
+
+function getGroupedOtherCount(rule: AttributeStyleRule & { kind: 'categorical' }, features: any[]): number | undefined {
+  if (features.length > 0) {
+    const ownColorValues = new Set(
+      rule.stops
+        .filter((stop) => stop.value !== null && stop.enabled)
+        .map((stop) => categoryKey(stop.value))
+    );
+    return features.reduce((sum, feature) => {
+      const value = feature?.properties?.[rule.field];
+      return ownColorValues.has(categoryKey(value)) ? sum : sum + 1;
+    }, 0);
+  }
+
+  const other = rule.stops.find((stop) => stop.value === null);
+  const disabledCount = rule.stops
+    .filter((stop) => stop.value !== null && !stop.enabled && typeof stop.count === 'number')
+    .reduce((sum, stop) => sum + (stop.count || 0), 0);
+  if (typeof other?.count === 'number' || disabledCount > 0) return (other?.count || 0) + disabledCount;
+  return undefined;
+}
+
+function getCategoryCounts(field: string, features: any[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const feature of features) {
+    const value = feature?.properties?.[field];
+    const key = categoryKey(value);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return counts;
+}
+
+function categoryKey(value: unknown): string {
+  if (value == null) return 'null:';
+  return `${typeof value}:${String(value)}`;
 }
 
 function NumericClassList({ rule, onRuleChange }: { rule: AttributeStyleRule & { kind: 'numeric' }; onRuleChange: (r: AttributeStyleRule) => void }) {

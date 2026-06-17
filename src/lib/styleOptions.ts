@@ -97,11 +97,17 @@ export type LabelStyleOptions = {
   haloWidth?: number;
 };
 
+export type DisplayStyleOptions = {
+  hideSuspectedDuplicates?: boolean;
+  showLegend?: boolean;
+};
+
 export type GeometryStyleOptions = {
   point?: PointStyleOptions;
   line?: LineStyleOptions;
   polygon?: PolygonStyleOptions;
   label?: LabelStyleOptions;
+  display?: DisplayStyleOptions;
 };
 
 export type StyleMode = 'server' | 'custom' | 'attribute';
@@ -152,7 +158,7 @@ export const defaultStyleOptions: GeometryStyleOptions = {
     icon: DEFAULT_POINT_ICON_ID,
     iconSize: 24,
     iconAnchor: 'center',
-    iconAllowOverlap: false,
+    iconAllowOverlap: true,
     iconIgnorePlacement: false,
     iconRotate: 0,
     iconRotationAlignment: 'auto',
@@ -198,5 +204,9 @@ export const defaultStyleOptions: GeometryStyleOptions = {
     size: 12,
     haloColor: '#ffffff',
     haloWidth: 1.5,
+  },
+  display: {
+    hideSuspectedDuplicates: false,
+    showLegend: true,
   },
 };

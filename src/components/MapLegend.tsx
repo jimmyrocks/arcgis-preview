@@ -13,11 +13,19 @@ type Props = {
   fields?: FieldMeta[];
   collapsed?: boolean;
   onCollapsedChange?: (collapsed: boolean) => void;
+  activeHighlightKey?: string | null;
+  onHighlightChange?: (highlight: LegendHighlight | null) => void;
 };
 
 type GeometryKind = 'point' | 'line' | 'polygon';
 
-export default function MapLegend({ mode, options, attributeStyle, geometryType, layerName, fields = [], collapsed: collapsedProp, onCollapsedChange }: Props) {
+export type LegendHighlight = {
+  key: string;
+  label: string;
+  filter: any[] | null;
+};
+
+export default function MapLegend({ mode, options, attributeStyle, geometryType, layerName, fields = [], collapsed: collapsedProp, onCollapsedChange, activeHighlightKey = null, onHighlightChange }: Props) {
   const [internalCollapsed, setInternalCollapsed] = React.useState(false);
   const collapsed = collapsedProp ?? internalCollapsed;
   const geometry = inferKind(geometryType);
@@ -86,9 +94,21 @@ export default function MapLegend({ mode, options, attributeStyle, geometryType,
       {!collapsed ? (
         <div style={{ display: 'grid', gap: 8, padding: 10 }}>
           {rule ? (
-            <AttributeLegend rule={rule} geometry={geometry} pointStyle={style.point} fieldLabel={subtitle} />
+            <AttributeLegend
+              rule={rule}
+              geometry={geometry}
+              pointStyle={style.point}
+              fieldLabel={subtitle}
+              activeHighlightKey={activeHighlightKey}
+              onHighlightChange={onHighlightChange}
+            />
           ) : (
-            <FlatLegend geometry={geometry} style={style} />
+            <FlatLegend
+              geometry={geometry}
+              style={style}
+              activeHighlightKey={activeHighlightKey}
+              onHighlightChange={onHighlightChange}
+            />
           )}
           {style.label.enabled && style.label.field ? (
             <div style={{ borderTop: '1px solid var(--border)', paddingTop: 7, fontSize: 11, color: 'var(--muted)' }}>
@@ -106,11 +126,15 @@ function AttributeLegend({
   geometry,
   pointStyle,
   fieldLabel,
+  activeHighlightKey,
+  onHighlightChange,
 }: {
   rule: AttributeStyleRule;
   geometry: GeometryKind;
   pointStyle: ReturnType<typeof resolveStyle>['point'];
   fieldLabel: string;
+  activeHighlightKey?: string | null;
+  onHighlightChange?: (highlight: LegendHighlight | null) => void;
 }) {
   if (rule.kind === 'numeric') {
     const stops = [...rule.stops].sort((a, b) => a.value - b.value);
@@ -129,38 +153,83 @@ function AttributeLegend({
     );
   }
 
-  const enabled = rule.stops.filter((stop) => stop.enabled);
-  const visible = enabled.slice(0, 8);
-  const remaining = Math.max(0, enabled.length - visible.length);
+  const enabledNamed = rule.stops.filter((stop) => stop.value !== null && stop.enabled);
+  const other = buildGroupedOtherStop(rule);
+  const stops = other ? [...enabledNamed, other] : enabledNamed;
+  const visible = stops.slice(0, 8);
+  const remaining = Math.max(0, stops.length - visible.length);
   return (
     <div style={{ display: 'grid', gap: 5 }}>
       <div style={{ fontSize: 11, color: 'var(--muted)' }}>{fieldLabel}</div>
-      {visible.map((stop, index) => (
-        <LegendRow
-          key={`${String(stop.value)}-${index}`}
-          color={stop.color}
-          geometry={geometry}
-          pointStyle={pointStyle}
-          label={stop.value === null ? (stop.label || 'Other / no data') : String(stop.value)}
-          suffix={typeof stop.count === 'number' ? stop.count.toLocaleString() : ''}
-        />
-      ))}
+      {visible.map((stop, index) => {
+        const label = stop.value === null ? (stop.label || 'Other / grouped') : String(stop.value);
+        const key = `attribute:${rule.field}:${stop.value === null ? '__other__' : String(stop.value)}`;
+        const active = activeHighlightKey === key;
+        return (
+          <LegendRow
+            key={`${String(stop.value)}-${index}`}
+            color={stop.color}
+            geometry={geometry}
+            pointStyle={pointStyle}
+            label={label}
+            suffix={typeof stop.count === 'number' ? stop.count.toLocaleString() : ''}
+            active={active}
+            onClick={onHighlightChange ? () => {
+              onHighlightChange(active ? null : { key, label, filter: buildCategoricalLegendFilter(rule, stop.value) });
+            } : undefined}
+          />
+        );
+      })}
       {remaining ? <div className="u-small u-muted">+ {remaining} more</div> : null}
     </div>
   );
 }
 
-function FlatLegend({ geometry, style }: { geometry: GeometryKind; style: ReturnType<typeof resolveStyle> }) {
+function buildGroupedOtherStop(rule: AttributeStyleRule & { kind: 'categorical' }) {
+  const other = rule.stops.find((stop) => stop.value === null);
+  if (!other) return null;
+  const disabledCount = rule.stops
+    .filter((stop) => stop.value !== null && !stop.enabled && typeof stop.count === 'number')
+    .reduce((sum, stop) => sum + (stop.count || 0), 0);
+  const count = typeof other.count === 'number' || disabledCount > 0
+    ? (other.count || 0) + disabledCount
+    : undefined;
+  return {
+    ...other,
+    enabled: true,
+    label: disabledCount > 0 ? 'Other / grouped' : other.label || 'Other / no data',
+    count,
+  };
+}
+
+function FlatLegend({
+  geometry,
+  style,
+  activeHighlightKey,
+  onHighlightChange,
+}: {
+  geometry: GeometryKind;
+  style: ReturnType<typeof resolveStyle>;
+  activeHighlightKey?: string | null;
+  onHighlightChange?: (highlight: LegendHighlight | null) => void;
+}) {
   const color =
     geometry === 'line' ? style.line.color :
     geometry === 'polygon' ? style.polygon.fillColor :
     style.point.fillColor;
+  const label = geometry === 'point' ? (style.point.symbol === 'icon' ? pointIconLabel(style.point.icon) : 'Points') : geometry === 'line' ? 'Lines' : 'Polygons';
+  const key = `flat:${geometry}`;
+  const active = activeHighlightKey === key;
   return (
     <LegendRow
       color={color}
       geometry={geometry}
       pointStyle={style.point}
-      label={geometry === 'point' ? (style.point.symbol === 'icon' ? pointIconLabel(style.point.icon) : 'Points') : geometry === 'line' ? 'Lines' : 'Polygons'}
+      label={label}
+      active={active}
+      onClick={onHighlightChange ? () => {
+        onHighlightChange(active ? null : { key, label, filter: buildAllFeaturesFilter() });
+      } : undefined}
     />
   );
 }
@@ -171,22 +240,75 @@ function LegendRow({
   pointStyle,
   label,
   suffix,
+  active = false,
+  onClick,
 }: {
   color: string;
   geometry: GeometryKind;
   pointStyle: ReturnType<typeof resolveStyle>['point'];
   label: string;
   suffix?: string;
+  active?: boolean;
+  onClick?: () => void;
 }) {
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '22px minmax(0, 1fr) auto', alignItems: 'center', gap: 7, minWidth: 0 }}>
+  const content = (
+    <>
       <SymbolSwatch color={color} geometry={geometry} pointStyle={pointStyle} />
       <span title={label} style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }}>
         {label}
       </span>
       {suffix ? <span style={{ color: 'var(--muted)', fontSize: 11 }}>{suffix}</span> : null}
+    </>
+  );
+  const style: React.CSSProperties = {
+    display: 'grid',
+    gridTemplateColumns: '22px minmax(0, 1fr) auto',
+    alignItems: 'center',
+    gap: 7,
+    minWidth: 0,
+    borderRadius: 6,
+    margin: '0 -4px',
+    padding: '3px 4px',
+    background: active ? 'rgba(91, 140, 255, 0.16)' : 'transparent',
+    outline: active ? '1px solid rgba(91, 140, 255, 0.45)' : 'none',
+  };
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        title={active ? `Clear ${label} highlight` : `Highlight ${label}`}
+        style={{
+          ...style,
+          width: 'calc(100% + 8px)',
+          border: 'none',
+          color: 'var(--text)',
+          textAlign: 'left',
+          cursor: 'pointer',
+        }}
+      >
+        {content}
+      </button>
+    );
+  }
+  return (
+    <div style={style}>
+      {content}
     </div>
   );
+}
+
+function buildCategoricalLegendFilter(rule: AttributeStyleRule & { kind: 'categorical' }, value: string | number | null): any[] {
+  if (value !== null) return ['==', ['get', rule.field], value];
+  const enabledValues = rule.stops
+    .filter((stop) => stop.value !== null && stop.enabled)
+    .map((stop) => stop.value) as Array<string | number>;
+  if (!enabledValues.length) return buildAllFeaturesFilter();
+  return ['!', ['match', ['get', rule.field], enabledValues, true, false]];
+}
+
+function buildAllFeaturesFilter(): any[] {
+  return ['!=', ['id'], '__arcgis_preview_none__'];
 }
 
 function SymbolSwatch({ color, geometry, pointStyle }: { color: string; geometry: GeometryKind; pointStyle: ReturnType<typeof resolveStyle>['point'] }) {

@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, startTransition } from 'react';
 import { ToastContainer, ToastOptions, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import MapView from './components/MapView';
-import MapLegend from './components/MapLegend';
+import MapLegend, { type LegendHighlight } from './components/MapLegend';
 import ErrorBoundary from './components/ErrorBoundary';
 import { beautifyWhere, normalizeWhereInput, validateWhere } from './lib/whereUtils';
 import WhereEditor, { type WhereEditorHandle } from './components/WhereEditor';
@@ -18,9 +18,10 @@ import { QUALITATIVE_PALETTES, SEQUENTIAL_PALETTES } from './lib/colorPalettes';
 import type { MapServiceInfo, MapServiceLayerInfo } from './lib/types/arcgis-rest';
 import { resolveEsriLayer, fetchLayerMetadata, fetchFeatureCount, fetchFeatureCountInExtent } from './lib/esriLayer';
 import { extentFromFeatures } from './lib/geometry';
-import { findFeatureById } from './lib/ids';
+import { findFeatureById, getFeatureId } from './lib/ids';
 import { getRestServiceUrlInfo } from './lib/arcgis';
 import { buildRecentLayerEntry, pushRecentLayerEntry } from './lib/layerFinderRecent';
+import type { DuplicateFeatureSummary } from './lib/dedupeFeatures';
 
 function coerceUrlInput(raw: string): string {
   const cleaned = String(raw || '').trim().replace(/\s+/g, '').replace(/\/$/, '');
@@ -133,6 +134,24 @@ function parseCenterParam(): { center: [number, number] | null; zoom: number | n
   } catch { return { center: null, zoom: null }; }
 }
 
+function formatUrlNumber(value: number): string {
+  return value.toFixed(6);
+}
+
+function formatExtentForUrl(ext: Extent | null): string {
+  if (!ext) return '';
+  const nums = [ext.xmin, ext.ymin, ext.xmax, ext.ymax].map(Number);
+  if (!nums.every((n) => Number.isFinite(n))) return '';
+  return nums.map(formatUrlNumber).join(',');
+}
+
+function formatCenterForUrl(center: [number, number] | null): string {
+  if (!center) return '';
+  const [lat, lng] = center;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return '';
+  return `${formatUrlNumber(lat)},${formatUrlNumber(lng)}`;
+}
+
 function getInitialBasemap(): 'carto_positron' | 'usgs_topo' | 'usgs_imagery_topo' | 'usgs_imagery' | 'osm' | 'carto_dark' | 'carto_voyager' | 'esri_worldimagery' | 'opentopomap' {
   const allowed = new Set(['carto_positron', 'usgs_topo', 'usgs_imagery_topo', 'usgs_imagery', 'osm', 'carto_dark', 'carto_voyager', 'esri_worldimagery', 'opentopomap']);
   try {
@@ -174,9 +193,9 @@ function getInitialStyleMode(): StyleMode {
 function getInitialStyleOptions(): GeometryStyleOptions {
   try {
     const raw = new URLSearchParams(location.search).get('style');
-    if (!raw) return { ...defaultStyleOptions };
-    return decodeStyle(raw);
-  } catch { return { ...defaultStyleOptions }; }
+    if (!raw) return applyLegacyLegendVisibility({ ...defaultStyleOptions });
+    return applyLegacyLegendVisibility(decodeStyle(raw));
+  } catch { return applyLegacyLegendVisibility({ ...defaultStyleOptions }); }
 }
 
 function getInitialAttributeStyle(): AttributeStyleOptions {
@@ -190,8 +209,24 @@ function getInitialAttributeStyle(): AttributeStyleOptions {
 function getInitialLegendCollapsed(): boolean {
   try {
     const v = (new URLSearchParams(location.search).get('legend') || '').toLowerCase();
-    return v === '0' || v === 'false' || v === 'collapsed' || v === 'hidden';
+    return v === '0' || v === 'false' || v === 'collapsed';
   } catch { return false; }
+}
+
+function applyLegacyLegendVisibility(options: GeometryStyleOptions): GeometryStyleOptions {
+  try {
+    const v = (new URLSearchParams(location.search).get('legend') || '').toLowerCase();
+    if (v !== 'hidden') return options;
+    return {
+      ...options,
+      display: {
+        ...options.display,
+        showLegend: false,
+      },
+    };
+  } catch {
+    return options;
+  }
 }
 
 // --- Geometry style URL (de)serialization -----------------------------------
@@ -218,6 +253,7 @@ function sanitizeGeometryStyle(obj: any): GeometryStyleOptions {
     line: sanitizeStyleSection(obj?.line, defaultStyleOptions.line as Record<string, any>),
     polygon: sanitizeStyleSection(obj?.polygon, defaultStyleOptions.polygon as Record<string, any>),
     label: sanitizeStyleSection(obj?.label, defaultStyleOptions.label as Record<string, any>),
+    display: sanitizeStyleSection(obj?.display, defaultStyleOptions.display as Record<string, any>),
   };
 }
 
@@ -243,10 +279,12 @@ function encodeStyle(opts: GeometryStyleOptions): string {
     const line = diffStyleSection(opts?.line, defaultStyleOptions.line as Record<string, any>);
     const polygon = diffStyleSection(opts?.polygon, defaultStyleOptions.polygon as Record<string, any>);
     const label = diffStyleSection(opts?.label, defaultStyleOptions.label as Record<string, any>);
+    const display = diffStyleSection(opts?.display, defaultStyleOptions.display as Record<string, any>);
     if (point) min.point = point;
     if (line) min.line = line;
     if (polygon) min.polygon = polygon;
     if (label) min.label = label;
+    if (display) min.display = display;
     return JSON.stringify(min);
   } catch { return '{}'; }
 }
@@ -327,28 +365,31 @@ function decodeAttributeStyle(s: string): AttributeStyleOptions {
 
 export default function App() {
   const SWIPE_THRESHOLD_PX = 35; // horizontal movement required to trigger open/close
+  const initialCenterZoom = parseCenterParam();
+  const hasInitialCamera = !!initialCenterZoom.center && initialCenterZoom.zoom != null;
   const [serviceUrl, setServiceUrl] = useState<string>(getInitialUrl());
   const [isMobile, setIsMobile] = useState<boolean>(() => {
     try { return window.matchMedia('(max-width: 768px)').matches; } catch { return false; }
   });
   const [selectedMapLayerId, setSelectedMapLayerId] = useState<number | undefined>(undefined);
-  const [bbox, setBbox] = useState<string>('');
+  const [bbox, setBbox] = useState<string>(() => formatExtentForUrl(parseExtentParam()));
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
     try { return !window.matchMedia('(max-width: 1024px)').matches; } catch { return true; }
   });
-  const [center, setCenter] = useState<string>('');
-  const initialCenterZoom = parseCenterParam();
+  const [center, setCenter] = useState<string>(() => formatCenterForUrl(initialCenterZoom.center));
   const [zoom, setZoom] = useState<number>(initialCenterZoom.zoom || 0);
+  const [mapPositionReady, setMapPositionReady] = useState<boolean>(false);
   const [mouse, setMouse] = useState<string>('');
   const [infoOpen, setInfoOpen] = useState<boolean>(false);
   const [coordOrder, setCoordOrder] = useState<'lng-lat' | 'lat-lng'>('lng-lat');
   const [gdal, setGdal] = useState<boolean>(false);
-  const [zoomToExtent, setZoomToExtent] = useState<Extent | null>(() => parseExtentParam());
+  const [zoomToExtent, setZoomToExtent] = useState<Extent | null>(() => hasInitialCamera ? null : parseExtentParam());
   const [serviceMeta, setServiceMeta] = useState<MapServiceInfo | null>(null);
   const [layerMeta, setLayerMeta] = useState<MapServiceLayerInfo | null>(null);
   const [featureCount, setFeatureCount] = useState<number | null>(null);
   const [layerDataRows, setLayerDataRows] = useState<any[]>([]);
   const [featureCollection, setFeatureCollection] = useState<any>({ type: 'FeatureCollection', features: [] });
+  const [suspectedDuplicateIds, setSuspectedDuplicateIds] = useState<Array<string | number>>([]);
   const [renderMode, setRenderMode] = useState<'feature' | 'dynamic' | 'fallback_dynamic' | 'image' | 'vector'>('feature');
   const [layerOpacity, setLayerOpacity] = useState<number>(1);
   const [downloadedExtent, setDownloadedExtent] = useState<Extent | null>(null);
@@ -449,7 +490,6 @@ export default function App() {
       return 0;
     }
   }, [featureCollection]);
-
   useEffect(() => {
     if (!perfWarningKey) {
       setPerfWarning((current) => current?.source === 'loaded' ? null : current);
@@ -610,6 +650,7 @@ export default function App() {
       }
     } catch {}
   }, [featureCollection]);
+
   useEffect(() => {
     try {
       const res = validateWhere(whereInput || '', new Set(fieldNames.map(s => s.toUpperCase())), fieldsMeta as any);
@@ -676,10 +717,28 @@ export default function App() {
   const [styleOptions, setStyleOptions] = useState<GeometryStyleOptions>(getInitialStyleOptions());
   const [attributeStyle, setAttributeStyle] = useState<AttributeStyleOptions>(getInitialAttributeStyle());
   const [legendCollapsed, setLegendCollapsed] = useState<boolean>(getInitialLegendCollapsed());
+  const [legendHighlight, setLegendHighlight] = useState<LegendHighlight | null>(null);
+  useEffect(() => {
+    setSuspectedDuplicateIds([]);
+    setLegendHighlight(null);
+  }, [serviceUrl, selectedMapLayerId, where]);
+
+  const styleFeatureCollection = React.useMemo(() => {
+    if (!styleOptions.display?.hideSuspectedDuplicates || suspectedDuplicateIds.length === 0) return featureCollection;
+    const hidden = new Set(suspectedDuplicateIds.map((id) => `${typeof id}:${String(id)}`));
+    const features = Array.isArray(featureCollection?.features)
+      ? featureCollection.features.filter((feature: any) => {
+          const id = getFeatureId(feature);
+          return id == null || !hidden.has(`${typeof id}:${String(id)}`);
+        })
+      : [];
+    return { ...(featureCollection || { type: 'FeatureCollection' }), type: 'FeatureCollection', features };
+  }, [featureCollection, styleOptions.display?.hideSuspectedDuplicates, suspectedDuplicateIds]);
+  const legendVisible = styleOptions.display?.showLegend !== false;
 
   function handleStyleByField(fieldName: string) {
     const meta = (layerMeta?.fields as any[] | undefined)?.find((f: any) => f?.name === fieldName);
-    const features = (featureCollection as any)?.features ?? [];
+    const features = (styleFeatureCollection as any)?.features ?? [];
     const kind = inferSubMode(meta?.type);
     let rule: AttributeStyleOptions['rule'];
     let paletteId: string;
@@ -715,14 +774,14 @@ export default function App() {
 
         const e = (bbox || '').replace(/\s+/g, '');
         if (e) params.set('extent', e);
-        else params.delete('extent');
+        else if (mapPositionReady) params.delete('extent');
 
         const c = (center || '').replace(/\s+/g, '');
         if (c) params.set('center', c);
-        else params.delete('center');
+        else if (mapPositionReady) params.delete('center');
 
         if (typeof zoom === 'number' && zoom > 0) params.set('z', String(zoom));
-        else params.delete('z');
+        else if (mapPositionReady) params.delete('z');
 
         if (basemap) params.set('basemap', basemap);
         else params.delete('basemap');
@@ -744,7 +803,8 @@ export default function App() {
           const astyle = styleMode === 'attribute' ? encodeAttributeStyle(attributeStyle) : '';
           if (astyle) params.set('astyle', astyle);
           else params.delete('astyle');
-          if (legendCollapsed) params.set('legend', '0');
+          if (styleOptions.display?.showLegend === false) params.set('legend', 'hidden');
+          else if (legendCollapsed) params.set('legend', '0');
           else params.delete('legend');
         } else {
           params.delete('styleMode');
@@ -766,7 +826,7 @@ export default function App() {
     }, delay);
 
     return () => window.clearTimeout(timeoutId);
-  }, [activeTab, basemap, bbox, center, isMobile, legendCollapsed, selectedFeatureId, serviceUrl, styleMode, styleOptions, attributeStyle, where, zoom]);
+  }, [activeTab, basemap, bbox, center, isMobile, legendCollapsed, mapPositionReady, selectedFeatureId, serviceUrl, styleMode, styleOptions, attributeStyle, where, zoom]);
 
   // Keep header WHERE input mirrored with state
   useEffect(() => { setWhereInput(where || '1=1'); }, [where]);
@@ -1181,10 +1241,14 @@ export default function App() {
                // Transition heavy updates to keep input/UI responsive
                startTransition(() => setFeatureCollection(fc));
              }}
+              onDuplicateSummaryChange={(summary: DuplicateFeatureSummary) => {
+                setSuspectedDuplicateIds(summary.suspectedDuplicateIds);
+              }}
               onDownloadedExtentChange={(e) => setDownloadedExtent(e as any)}
               featureCollection={featureCollection}
               selectedFeatureId={selectedFeatureId}
               flashFeature={flashFeature}
+              legendHighlightFilter={legendVisible ? legendHighlight?.filter ?? null : null}
               zoomToLayerToken={zoomToLayerToken}
               onMapFeatureClickId={(id) => setSelectedFeatureId(id)}
               externalHoverId={tableHoverId}
@@ -1196,14 +1260,16 @@ export default function App() {
                 try {
                   const sw = b.getSouthWest();
                   const ne = b.getNorthEast();
-                  const fmt = (x: number) => x.toFixed(6);
+                  const fmt = formatUrlNumber;
                   setBbox(`${fmt(sw.lng)}, ${fmt(sw.lat)}, ${fmt(ne.lng)}, ${fmt(ne.lat)}`);
+                  setMapPositionReady(true);
                 } catch { setBbox(''); }
               }}
               onCenterZoomChange={(c, z) => {
-                const fmt = (x: number) => x.toFixed(6);
+                const fmt = formatUrlNumber;
                 setCenter(`${fmt(c.lat)}, ${fmt(c.lng)}`);
                 setZoom(z);
+                setMapPositionReady(true);
               }}
               onMouseMove={(ll) => setMouse(`${ll.lat.toFixed(6)}, ${ll.lng.toFixed(6)}`)}
               onStatusChange={(s) => {
@@ -1260,16 +1326,20 @@ export default function App() {
                 }
               }}
             />
-            <MapLegend
-              mode={styleMode}
-              options={styleOptions}
-              attributeStyle={attributeStyle}
-              geometryType={layerMeta?.geometryType}
-              layerName={layerMeta?.name || (serviceMeta as any)?.mapName}
-              fields={(layerMeta?.fields as any) || []}
-              collapsed={legendCollapsed}
-              onCollapsedChange={setLegendCollapsed}
-            />
+            {legendVisible ? (
+              <MapLegend
+                mode={styleMode}
+                options={styleOptions}
+                attributeStyle={attributeStyle}
+                geometryType={layerMeta?.geometryType}
+                layerName={layerMeta?.name || (serviceMeta as any)?.mapName}
+                fields={(layerMeta?.fields as any) || []}
+                collapsed={legendCollapsed}
+                onCollapsedChange={setLegendCollapsed}
+                activeHighlightKey={legendHighlight?.key ?? null}
+                onHighlightChange={setLegendHighlight}
+              />
+            ) : null}
             </ErrorBoundary>
             {/* Empty state overlay when no layer is loaded */}
             {!serviceUrl ? (
@@ -1585,6 +1655,7 @@ export default function App() {
               featureCount={featureCount}
               layerDataRows={layerDataRows}
               featureCollection={featureCollection}
+              styleFeatureCollection={styleFeatureCollection}
               downloadedExtent={downloadedExtent as any}
               onFlashFeature={(id) => flashFeatureOnMap(id)}
               onZoomToFeature={(id) => zoomToFeatureOnMap(id)}

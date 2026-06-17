@@ -19,8 +19,13 @@ const LABEL_POSITIONS: Record<string, { anchor: 'center' | 'top' | 'bottom' | 'l
 };
 
 function buildResolvedStyle(opts: GeometryStyleOptions | undefined) {
+  const rawPoint = opts?.point || {};
+  const pointDefaults = rawPoint.symbol === 'icon'
+    ? { ...defaultStyleOptions.point, fillOpacity: 1, iconAllowOverlap: true }
+    : defaultStyleOptions.point;
+
   return {
-    point: { ...defaultStyleOptions.point, ...(opts?.point || {}) },
+    point: { ...pointDefaults, ...rawPoint },
     line: { ...defaultStyleOptions.line, ...(opts?.line || {}) },
     polygon: { ...defaultStyleOptions.polygon, ...(opts?.polygon || {}) },
     label: { ...defaultStyleOptions.label, ...(opts?.label || {}) }
@@ -255,14 +260,14 @@ export function buildAttributeLayers(
 
 export function buildColorExpression(rule: AttributeStyleRule): unknown {
   if (rule.kind === 'categorical') {
-    const enabled = rule.stops.filter((stop) => stop.enabled);
+    const enabled = rule.stops.filter((stop) => stop.enabled && stop.value !== null);
+    const fallback = rule.stops.find((stop) => stop.value === null)?.color ?? rule.fallbackColor;
+    if (enabled.length === 0) return fallback;
+
     const arms: unknown[] = [];
     for (const stop of enabled) {
-      if (stop.value !== null) {
-        arms.push(stop.value, stop.color);
-      }
+      arms.push(stop.value, stop.color);
     }
-    const fallback = rule.stops.find((stop) => stop.value === null && stop.enabled)?.color ?? rule.fallbackColor;
     return ['match', ['get', rule.field], ...arms, fallback];
   }
 

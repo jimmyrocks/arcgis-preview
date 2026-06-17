@@ -63,6 +63,18 @@ export default function StyleTab({
   const update = (partial: Partial<GeometryStyleOptions>) => {
     onOptionsChange?.({ ...opts, ...partial });
   };
+  const updatePointSymbol = (symbol: 'circle' | 'icon') => {
+    const point = { ...opts.point, symbol };
+    if (symbol === 'icon') {
+      if (options.point?.fillOpacity == null || opts.point.fillOpacity === (defaultStyleOptions.point?.fillOpacity ?? 0.2)) {
+        point.fillOpacity = 1;
+      }
+      if (options.point?.iconAllowOverlap == null) {
+        point.iconAllowOverlap = true;
+      }
+    }
+    update({ point });
+  };
 
   return (
     <div style={{ padding: 8, display: 'grid', gap: 12 }}>
@@ -114,13 +126,33 @@ export default function StyleTab({
       {/* Custom style section — geometry controls + color source */}
       {isCustom && (
         <>
+          <fieldset>
+            <legend style={{ fontWeight: 600 }}>Display</legend>
+            <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
+              <label htmlFor="showLegend">Show legend</label>
+              <input
+                id="showLegend"
+                type="checkbox"
+                checked={opts.display.showLegend !== false}
+                onChange={(e) => update({ display: { ...opts.display, showLegend: e.target.checked } })}
+              />
+              <label htmlFor="hideSuspectedDuplicates">Hide suspected duplicates</label>
+              <input
+                id="hideSuspectedDuplicates"
+                type="checkbox"
+                checked={!!opts.display.hideSuspectedDuplicates}
+                onChange={(e) => update({ display: { ...opts.display, hideSuspectedDuplicates: e.target.checked } })}
+              />
+            </div>
+          </fieldset>
+
           {/* Geometry controls — always shown in custom mode */}
           {(kind === 'point' || !kind) && (
             <fieldset>
               <legend style={{ fontWeight: 600 }}>Points</legend>
               <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
                 <label htmlFor="ptSymbol">Symbol</label>
-                <select id="ptSymbol" value={opts.point.symbol} onChange={(e) => update({ point: { ...opts.point, symbol: e.target.value as any } })}>
+                <select id="ptSymbol" value={opts.point.symbol} onChange={(e) => updatePointSymbol(e.target.value as 'circle' | 'icon')}>
                   <option value="circle">Circle</option>
                   <option value="icon">Icon</option>
                 </select>
@@ -446,13 +478,16 @@ export default function StyleTab({
 }
 
 function normalize(options: GeometryStyleOptions): Required<GeometryStyleOptions> & GeometryStyleOptions {
+  const pointSymbol = options.point?.symbol === 'icon' ? 'icon' : 'circle';
+  const defaultPointFillOpacity = pointSymbol === 'icon' ? 1 : defaultStyleOptions.point?.fillOpacity ?? 0.2;
+
   return {
     point: {
-      symbol: options.point?.symbol === 'icon' ? 'icon' : 'circle',
+      symbol: pointSymbol,
       icon: POINT_ICON_OPTIONS.some((icon) => icon.id === options.point?.icon) ? options.point?.icon : DEFAULT_POINT_ICON_ID,
       iconSize: clampNum(options.point?.iconSize ?? defaultStyleOptions.point?.iconSize ?? 24, 10, 80),
       iconAnchor: POINT_ICON_ANCHOR_OPTIONS.includes(options.point?.iconAnchor as any) ? options.point?.iconAnchor : defaultStyleOptions.point?.iconAnchor ?? 'center',
-      iconAllowOverlap: !!options.point?.iconAllowOverlap,
+      iconAllowOverlap: options.point?.iconAllowOverlap ?? defaultStyleOptions.point?.iconAllowOverlap ?? false,
       iconIgnorePlacement: !!options.point?.iconIgnorePlacement,
       iconRotate: clampNum(options.point?.iconRotate ?? defaultStyleOptions.point?.iconRotate ?? 0, -360, 360),
       iconRotationAlignment: POINT_ICON_ALIGNMENT_OPTIONS.includes(options.point?.iconRotationAlignment as any) ? options.point?.iconRotationAlignment : defaultStyleOptions.point?.iconRotationAlignment ?? 'auto',
@@ -463,7 +498,7 @@ function normalize(options: GeometryStyleOptions): Required<GeometryStyleOptions
       opacity: clamp01(options.point?.opacity ?? 1),
       fill: options.point?.fill !== false,
       fillColor: options.point?.fillColor ?? options.point?.color ?? '#3388ff',
-      fillOpacity: clamp01(options.point?.fillOpacity ?? 0.2),
+      fillOpacity: clamp01(options.point?.fillOpacity ?? defaultPointFillOpacity),
       radius: clampNum(options.point?.radius ?? 6, 1, 100),
     },
     line: {
@@ -498,6 +533,10 @@ function normalize(options: GeometryStyleOptions): Required<GeometryStyleOptions
       size: clampNum(options.label?.size ?? defaultStyleOptions.label?.size ?? 12, 8, 32),
       haloColor: options.label?.haloColor ?? defaultStyleOptions.label?.haloColor ?? '#ffffff',
       haloWidth: clampNum(options.label?.haloWidth ?? defaultStyleOptions.label?.haloWidth ?? 1.5, 0, 6),
+    },
+    display: {
+      hideSuspectedDuplicates: !!options.display?.hideSuspectedDuplicates,
+      showLegend: options.display?.showLegend !== false,
     },
   } as any;
 }

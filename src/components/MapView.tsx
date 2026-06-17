@@ -21,6 +21,7 @@ import { resolveEsriLayer, fetchLayerMetadata, fetchServiceMetadata, summarizeSe
 import { applyFeatureSourceStyle } from '../lib/esriStyleRuntime';
 import type { GeometryKind } from '../lib/esriStyle';
 import { getFeatureId, findFeatureById } from '../lib/ids';
+import { dedupeFeatures, type DuplicateFeatureSummary } from '../lib/dedupeFeatures';
 import BasemapChooser from './controls/BasemapChooser';
 
 type BasemapKey =
@@ -53,9 +54,11 @@ export type MapViewProps = {
   initialCenter?: [number, number] | null;
   initialZoom?: number | null;
   onFeatureCollection?: (fc: FeatureCollection) => void;
+  onDuplicateSummaryChange?: (summary: DuplicateFeatureSummary) => void;
   featureCollection?: FeatureCollection;
   selectedFeatureId?: string | number | null;
   flashFeature?: Feature | null;
+  legendHighlightFilter?: any[] | null;
   onMapFeatureClickId?: (id: string | number | null) => void;
   // Drive the map hover-highlight from outside (e.g. hovering a row in the Data tab).
   externalHoverId?: string | number | null;
@@ -80,6 +83,7 @@ const VECTOR_SOURCE_ID = 'arcgis-vector-source';
 const VECTOR_LAYER_PREFIX = 'arcgis-vector-style';
 const HIGHLIGHT_HOVER_PREFIX = 'arcgis-highlight-hover';
 const HIGHLIGHT_SELECTED_PREFIX = 'arcgis-highlight-selected';
+const HIGHLIGHT_LEGEND_PREFIX = 'arcgis-highlight-legend';
 const FLASH_SOURCE_ID = 'arcgis-flash';
 const FLASH_LAYER_PREFIX = 'arcgis-flash';
 const ACCENT_COLOR = '#5b8cff';
@@ -323,6 +327,46 @@ function collectFeaturesFromSource(src: any): Feature[] {
   return [];
 }
 
+function duplicateIdFilter(ids: Array<string | number>): any[] | null {
+  const stringIds = Array.from(new Set(ids.map((id) => String(id))));
+  if (!stringIds.length) return null;
+  return [
+    '!',
+    [
+      'any',
+      ['match', ['to-string', ['id']], stringIds, true, false],
+      ['match', ['to-string', ['get', '__id']], stringIds, true, false]
+    ]
+  ];
+}
+
+function applySuspectedDuplicateFilter(
+  map: MapLibreMap,
+  layerIds: string[],
+  baseFilters: Map<string, any>,
+  ids: Array<string | number>,
+  enabled: boolean
+) {
+  const hideFilter = enabled ? duplicateIdFilter(ids) : null;
+  const activeIds = new Set(layerIds);
+  for (const key of Array.from(baseFilters.keys())) {
+    if (!activeIds.has(key)) baseFilters.delete(key);
+  }
+  for (const layerId of layerIds) {
+    try {
+      const layer: any = map.getLayer(layerId);
+      if (!layer) {
+        baseFilters.delete(layerId);
+        continue;
+      }
+      if (!baseFilters.has(layerId)) baseFilters.set(layerId, layer.filter ?? null);
+      const base = baseFilters.get(layerId);
+      const nextFilter = hideFilter ? (base ? ['all', base, hideFilter] : hideFilter) : base;
+      map.setFilter(layerId, nextFilter ?? undefined);
+    } catch {}
+  }
+}
+
 function estimateSourceFeatureCount(src: any): number {
   try {
     if (src?._featureStore instanceof Map) return src._featureStore.size;
@@ -490,6 +534,81 @@ function ensureHighlightLayers(map: MapLibreMap, sourceId: string, geometry?: Ge
   });
 }
 
+function ensureLegendHighlightLayers(map: MapLibreMap, sourceId: string, geometry?: GeometryKind) {
+  const isPoint = geometry === 'point';
+  const isLine = geometry === 'polyline';
+  const isPolygon = geometry === 'polygon';
+  const hiddenFilter = ['==', ['id'], '__arcgis_preview_none__'];
+
+  clearRendererArtifacts(map, HIGHLIGHT_LEGEND_PREFIX);
+
+  const layers: LayerSpecification[] = [];
+  if (isPolygon) {
+    layers.push({
+      id: `${HIGHLIGHT_LEGEND_PREFIX}-fill`,
+      type: 'fill',
+      source: sourceId,
+      filter: hiddenFilter as any,
+      paint: {
+        'fill-color': '#00c2ff',
+        'fill-opacity': 0.18,
+        'fill-outline-color': '#00c2ff'
+      }
+    });
+  }
+  if (isLine || isPolygon) {
+    layers.push({
+      id: `${HIGHLIGHT_LEGEND_PREFIX}-line`,
+      type: 'line',
+      source: sourceId,
+      filter: hiddenFilter as any,
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': '#00a7e1',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 6, 2, 10, 4, 14, 7],
+        'line-opacity': 0.95
+      }
+    });
+  }
+  if (isPoint) {
+    layers.push({
+      id: `${HIGHLIGHT_LEGEND_PREFIX}-circle`,
+      type: 'circle',
+      source: sourceId,
+      filter: hiddenFilter as any,
+      paint: {
+        'circle-color': '#00c2ff',
+        'circle-opacity': 0.28,
+        'circle-stroke-color': '#0077ff',
+        'circle-stroke-opacity': 1,
+        'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 6, 1.2, 10, 2.2, 14, 3.4],
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, 5, 10, 9, 14, 14]
+      }
+    });
+  }
+
+  for (const layer of layers) {
+    try { map.addLayer(layer); } catch {}
+  }
+}
+
+function applyLegendHighlightFilter(
+  map: MapLibreMap,
+  filter: any[] | null | undefined,
+  duplicateIds: Array<string | number> = [],
+  hideSuspectedDuplicates: boolean = false
+) {
+  const duplicateFilter = hideSuspectedDuplicates ? duplicateIdFilter(duplicateIds) : null;
+  const next = filter
+    ? (duplicateFilter ? ['all', filter, duplicateFilter] : filter)
+    : ['==', ['id'], '__arcgis_preview_none__'];
+  for (const id of [`${HIGHLIGHT_LEGEND_PREFIX}-fill`, `${HIGHLIGHT_LEGEND_PREFIX}-line`, `${HIGHLIGHT_LEGEND_PREFIX}-circle`]) {
+    try {
+      if (map.getLayer(id)) map.setFilter(id, next as any);
+    } catch {}
+  }
+}
+
 function updateHighlightStates(map: MapLibreMap, sourceId: string, hoverId: string | number | null | undefined, selectedId: string | number | null | undefined, prevHoverId?: string | number | null, prevSelectedId?: string | number | null) {
   try {
     // Clear previous hover state
@@ -517,6 +636,9 @@ function moveOverlayLayersToTop(map: MapLibreMap) {
     `${FLASH_LAYER_PREFIX}-fill`,
     `${FLASH_LAYER_PREFIX}-line`,
     `${FLASH_LAYER_PREFIX}-circle`,
+    `${HIGHLIGHT_LEGEND_PREFIX}-fill`,
+    `${HIGHLIGHT_LEGEND_PREFIX}-line`,
+    `${HIGHLIGHT_LEGEND_PREFIX}-circle`,
     `${HIGHLIGHT_SELECTED_PREFIX}-fill`,
     `${HIGHLIGHT_SELECTED_PREFIX}-line`,
     `${HIGHLIGHT_SELECTED_PREFIX}-circle`,
@@ -590,9 +712,11 @@ export default function MapView({
   initialCenter,
   initialZoom,
   onFeatureCollection,
+  onDuplicateSummaryChange,
   featureCollection,
   selectedFeatureId,
   flashFeature,
+  legendHighlightFilter,
   onMapFeatureClickId,
   externalHoverId,
   onHoverFeatureId,
@@ -627,6 +751,13 @@ export default function MapView({
   const arcPageSizeRef = React.useRef<number>(ARC_PAGE_SIZE_START);
   const opacityBaseRef = React.useRef<Map<string, Record<string, any>>>(new Map());
   const styleApplyVersionRef = React.useRef(0);
+  const duplicateReportKeyRef = React.useRef<string>('');
+  const duplicateFilterBaseRef = React.useRef<Map<string, any>>(new Map());
+  const onDuplicateSummaryChangeRef = React.useRef(onDuplicateSummaryChange);
+  const suspectedDuplicateIdsRef = React.useRef<Array<string | number>>([]);
+  const legendHighlightFilterRef = React.useRef<any[] | null>(legendHighlightFilter ?? null);
+  const styledLayerIdsRef = React.useRef<string[]>([]);
+  const hideSuspectedDuplicatesRef = React.useRef(false);
   const segmentLruRef = React.useRef<Map<string, true>>(new Map());
   const lastClearZoomRef = React.useRef<number>(0);
   const [fetchControlContainer, setFetchControlContainer] = React.useState<HTMLDivElement | null>(null);
@@ -636,7 +767,20 @@ export default function MapView({
     isLoadingRef.current = isLoading;
   }, [isLoading]);
 
+  React.useEffect(() => {
+    onDuplicateSummaryChangeRef.current = onDuplicateSummaryChange;
+  }, [onDuplicateSummaryChange]);
+
+  React.useEffect(() => {
+    legendHighlightFilterRef.current = legendHighlightFilter ?? null;
+  }, [legendHighlightFilter]);
+
   const effectiveFetchPaused = fetchPaused || forcedFetchPaused;
+  const hideSuspectedDuplicates = !!customStyle?.display?.hideSuspectedDuplicates;
+
+  React.useEffect(() => {
+    hideSuspectedDuplicatesRef.current = hideSuspectedDuplicates;
+  }, [hideSuspectedDuplicates]);
 
   React.useEffect(() => {
     fetchPausedRef.current = effectiveFetchPaused;
@@ -1294,6 +1438,8 @@ export default function MapView({
 
         const geomForHighlight = geometryRef.current ?? normalizeGeometryType((lm as any)?.geometryType) ?? 'polygon';
         ensureHighlightLayers(map, ARC_SOURCE_ID, geomForHighlight);
+        ensureLegendHighlightLayers(map, ARC_SOURCE_ID, geomForHighlight);
+        applyLegendHighlightFilter(map, legendHighlightFilterRef.current, suspectedDuplicateIdsRef.current, hideSuspectedDuplicatesRef.current);
         updateHighlightStates(map, ARC_SOURCE_ID, hoverFeatureId, selectedFeatureId, prevHoverIdRef.current, prevSelectedIdRef.current);
         moveOverlayLayersToTop(map);
 
@@ -1328,6 +1474,9 @@ export default function MapView({
             opacityBaseRef.current.delete(id);
             applyOpacityToLayer(map, id, layerOpacity, opacityBaseRef.current);
           });
+          styledLayerIdsRef.current = applied.interactiveLayerIds;
+          duplicateFilterBaseRef.current.clear();
+          applySuspectedDuplicateFilter(map, styledLayerIdsRef.current, duplicateFilterBaseRef.current, suspectedDuplicateIdsRef.current, hideSuspectedDuplicatesRef.current);
           interactionCleanupRef.current?.();
           interactionCleanupRef.current = bindFeatureInteractions(
             map,
@@ -1352,7 +1501,20 @@ export default function MapView({
           try {
             const src: any = map.getSource(ARC_SOURCE_ID);
             if (!src) return;
-            const feats = collectFeaturesFromSource(src);
+            const rawFeatures = collectFeaturesFromSource(src);
+            const { features: feats, summary } = dedupeFeatures(rawFeatures);
+            if (summary.reportKey !== duplicateReportKeyRef.current) {
+              duplicateReportKeyRef.current = summary.reportKey;
+              onDuplicateSummaryChangeRef.current?.(summary);
+              if (summary.duplicateCount > 0) {
+                console.warn('[arcgis-preview] Duplicate features detected and deduped', summary);
+              } else if (summary.repeatedGeometryCount > 0) {
+                console.warn('[arcgis-preview] Repeated feature geometries detected', summary);
+              }
+            }
+            suspectedDuplicateIdsRef.current = summary.suspectedDuplicateIds;
+            applySuspectedDuplicateFilter(map, styledLayerIdsRef.current, duplicateFilterBaseRef.current, suspectedDuplicateIdsRef.current, hideSuspectedDuplicatesRef.current);
+            applyLegendHighlightFilter(map, legendHighlightFilterRef.current, suspectedDuplicateIdsRef.current, hideSuspectedDuplicatesRef.current);
             const fc: FeatureCollection = { type: 'FeatureCollection', features: feats };
             onFeatureCollection?.(fc);
             const b = boundsFromFeatures(feats);
@@ -1513,8 +1675,13 @@ export default function MapView({
       interactionCleanupRef.current = null;
       sourceDataCleanupRef.current?.();
       sourceDataCleanupRef.current = null;
+      duplicateReportKeyRef.current = '';
+      duplicateFilterBaseRef.current.clear();
+      suspectedDuplicateIdsRef.current = [];
+      styledLayerIdsRef.current = [];
       clearRendererArtifacts(map, HIGHLIGHT_HOVER_PREFIX);
       clearRendererArtifacts(map, HIGHLIGHT_SELECTED_PREFIX);
+      clearRendererArtifacts(map, HIGHLIGHT_LEGEND_PREFIX);
       clearRendererArtifacts(map, RENDERER_PREFIX);
       clearRendererArtifacts(map, CUSTOM_PREFIX);
       clearRendererArtifacts(map, VECTOR_LAYER_PREFIX);
@@ -1528,6 +1695,17 @@ export default function MapView({
       try { if (map.getSource(ARC_SOURCE_ID)) map.removeSource(ARC_SOURCE_ID); } catch {}
     };
   }, [serviceUrl, selectedMapLayerId, ready]);
+
+  React.useEffect(() => {
+    if (!ready || !mapRef.current) return;
+    try {
+      const map = mapRef.current;
+      if (!map.getSource(ARC_SOURCE_ID)) return;
+      ensureLegendHighlightLayers(map, ARC_SOURCE_ID, geometryRef.current);
+      applyLegendHighlightFilter(map, legendHighlightFilter, suspectedDuplicateIdsRef.current, hideSuspectedDuplicatesRef.current);
+      moveOverlayLayersToTop(map);
+    } catch {}
+  }, [ready, JSON.stringify(legendHighlightFilter ?? null), hideSuspectedDuplicates]);
 
   // Update where without recreating the source
   React.useEffect(() => {
@@ -1581,6 +1759,9 @@ export default function MapView({
           opacityBaseRef.current.delete(id);
           applyOpacityToLayer(map, id, layerOpacity, opacityBaseRef.current);
         });
+        styledLayerIdsRef.current = applied.interactiveLayerIds;
+        duplicateFilterBaseRef.current.clear();
+        applySuspectedDuplicateFilter(map, styledLayerIdsRef.current, duplicateFilterBaseRef.current, suspectedDuplicateIdsRef.current, hideSuspectedDuplicates);
         interactionCleanupRef.current?.();
         interactionCleanupRef.current = bindFeatureInteractions(
           map,
@@ -1598,7 +1779,7 @@ export default function MapView({
         styleApplyVersionRef.current += 1;
       }
     };
-  }, [styleMode, JSON.stringify(customStyle || {}), JSON.stringify(attributeStyle?.rule ?? null), ready]);
+  }, [styleMode, JSON.stringify(customStyle || {}), JSON.stringify(attributeStyle?.rule ?? null), ready, hideSuspectedDuplicates]);
 
   // Flash overlay for selected feature
   React.useEffect(() => {
