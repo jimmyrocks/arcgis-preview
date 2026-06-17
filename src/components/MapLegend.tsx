@@ -11,12 +11,15 @@ type Props = {
   geometryType?: string | null;
   layerName?: string;
   fields?: FieldMeta[];
+  collapsed?: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
 };
 
 type GeometryKind = 'point' | 'line' | 'polygon';
 
-export default function MapLegend({ mode, options, attributeStyle, geometryType, layerName, fields = [] }: Props) {
-  const [collapsed, setCollapsed] = React.useState(false);
+export default function MapLegend({ mode, options, attributeStyle, geometryType, layerName, fields = [], collapsed: collapsedProp, onCollapsedChange }: Props) {
+  const [internalCollapsed, setInternalCollapsed] = React.useState(false);
+  const collapsed = collapsedProp ?? internalCollapsed;
   const geometry = inferKind(geometryType);
   if (mode === 'server' || !geometry) return null;
 
@@ -48,7 +51,11 @@ export default function MapLegend({ mode, options, attributeStyle, geometryType,
     >
       <button
         type="button"
-        onClick={() => setCollapsed((value) => !value)}
+        onClick={() => {
+          const next = !collapsed;
+          setInternalCollapsed(next);
+          onCollapsedChange?.(next);
+        }}
         title={collapsed ? 'Show legend' : 'Hide legend'}
         style={{
           width: '100%',

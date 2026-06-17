@@ -22,7 +22,8 @@ export type WhereEditorProps = {
   // Which key applies the change: 'enter' (default) or 'mod-enter'
   commitKey?: 'enter' | 'mod-enter';
   readOnly?: boolean;
+  // Load the CodeMirror editor immediately or only after interaction.
+  richLoad?: 'immediate' | 'on-focus' | 'never';
   // Accept arbitrary props like id, className, style, etc.
   [key: string]: any;
 };
-

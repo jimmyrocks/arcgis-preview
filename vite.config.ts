@@ -53,7 +53,9 @@ export default defineConfig(({ mode }) => {
           }
         }
       },
-      chunkSizeWarningLimit: 900
+      // MapLibre is intentionally split into its own vendor chunk; the map is
+      // the product, so keep warnings focused on unexpected app-code growth.
+      chunkSizeWarningLimit: 2500
     },
     resolve: {
       alias: {

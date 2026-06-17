@@ -9,12 +9,13 @@ type FieldMeta = { name: string; type?: string; alias?: string };
 type Props = {
   fields?: FieldMeta[];
   rule: AttributeStyleRule | undefined;
+  paletteId?: string;
   featureCollection?: FeatureCollection;
-  onRuleChange: (rule: AttributeStyleRule) => void;
+  onRuleChange: (rule: AttributeStyleRule, meta?: { paletteId?: string }) => void;
   geometryType?: string | null;
 };
 
-export default function AttributeStyleEditor({ fields, rule, featureCollection, onRuleChange }: Props) {
+export default function AttributeStyleEditor({ fields, rule, paletteId, featureCollection, onRuleChange }: Props) {
   const features = featureCollection?.features ?? [];
   const hasData = features.length > 0;
   const fieldList = fields ?? [];
@@ -24,7 +25,16 @@ export default function AttributeStyleEditor({ fields, rule, featureCollection, 
 
   // Track which palette is active (instead of inferring from stop colors, which breaks on manual edits)
   const defaultPaletteId = rule?.kind === 'numeric' ? SEQUENTIAL_PALETTES[0].id : QUALITATIVE_PALETTES[0].id;
-  const [paletteId, setPaletteId] = React.useState<string>(defaultPaletteId);
+  const [localPaletteId, setLocalPaletteId] = React.useState<string>(paletteId || defaultPaletteId);
+  const activePaletteId = paletteId || localPaletteId;
+
+  React.useEffect(() => {
+    if (paletteId) setLocalPaletteId(paletteId);
+  }, [paletteId]);
+
+  function setActivePaletteId(nextPaletteId: string) {
+    setLocalPaletteId(nextPaletteId);
+  }
 
   // Auto-init: whenever rule is absent but data+fields exist, classify the first field.
   // This also fires after Reset (which sets rule → undefined).
@@ -34,62 +44,62 @@ export default function AttributeStyleEditor({ fields, rule, featureCollection, 
     const first = sortedFields[0];
     const kind = inferSubMode(first.type);
     const pid = kind === 'numeric' ? SEQUENTIAL_PALETTES[0].id : QUALITATIVE_PALETTES[0].id;
-    setPaletteId(pid);
-    autoClassify(first.name, first.type, features, onRuleChange);
+    setActivePaletteId(pid);
+    autoClassify(first.name, first.type, features, onRuleChange, pid);
   }, [ruleAbsent, hasData, sortedFields.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleFieldChange(name: string) {
     const meta = sortedFields.find(f => f.name === name);
     const kind = inferSubMode(meta?.type);
     const pid = kind === 'numeric' ? SEQUENTIAL_PALETTES[0].id : QUALITATIVE_PALETTES[0].id;
-    setPaletteId(pid);
-    autoClassify(name, meta?.type, features, onRuleChange);
+    setActivePaletteId(pid);
+    autoClassify(name, meta?.type, features, onRuleChange, pid);
   }
 
   function handleKindToggle(kind: 'categorical' | 'numeric') {
     if (!rule) return;
     const defaultPalette = kind === 'categorical' ? QUALITATIVE_PALETTES[0] : SEQUENTIAL_PALETTES[0];
-    setPaletteId(defaultPalette.id);
+    setActivePaletteId(defaultPalette.id);
     if (kind === 'categorical') {
       const stops = hasData
         ? classifyCategorical(features as any, rule.field, defaultPalette)
         : [{ value: null, color: '#aaaaaa', label: 'Other / No data', enabled: true }];
-      onRuleChange({ kind: 'categorical', field: rule.field, channel: 'color', stops, fallbackColor: '#aaaaaa' });
+      onRuleChange({ kind: 'categorical', field: rule.field, channel: 'color', stops, fallbackColor: '#aaaaaa' }, { paletteId: defaultPalette.id });
     } else {
       const stops = hasData
         ? classifyNumeric(features as any, rule.field, defaultPalette)
         : [{ value: 0, color: defaultPalette.colors[0] }, { value: 1, color: defaultPalette.colors[defaultPalette.colors.length - 1] }];
-      onRuleChange({ kind: 'numeric', field: rule.field, channel: 'color', stops, fallbackColor: defaultPalette.colors[0] });
+      onRuleChange({ kind: 'numeric', field: rule.field, channel: 'color', stops, fallbackColor: defaultPalette.colors[0] }, { paletteId: defaultPalette.id });
     }
   }
 
   function handlePaletteChange(palette: Palette) {
     if (!rule) return;
-    setPaletteId(palette.id);
+    setActivePaletteId(palette.id);
     if (rule.kind === 'categorical') {
       const stops = rule.stops.map((s, i) => {
         if (s.value === null) return s; // keep "Other" stop color as-is
         return { ...s, color: palette.colors[i % palette.colors.length] };
       });
-      onRuleChange({ ...rule, stops });
+      onRuleChange({ ...rule, stops }, { paletteId: palette.id });
     } else {
       const stops = rule.stops.map((s, i) => {
         const t = rule.stops.length > 1 ? i / (rule.stops.length - 1) : 0;
         return { ...s, color: interpolatePaletteColor(palette.colors, t) };
       });
-      onRuleChange({ ...rule, stops, fallbackColor: palette.colors[0] });
+      onRuleChange({ ...rule, stops, fallbackColor: palette.colors[0] }, { paletteId: palette.id });
     }
   }
 
   function handleReclassify() {
     if (!rule || !hasData) return;
     const palettes = rule.kind === 'categorical' ? QUALITATIVE_PALETTES : SEQUENTIAL_PALETTES;
-    const palette = palettes.find(p => p.id === paletteId) ?? palettes[0];
+    const palette = palettes.find(p => p.id === activePaletteId) ?? palettes[0];
     if (rule.kind === 'categorical') {
-      onRuleChange({ ...rule, stops: classifyCategorical(features as any, rule.field, palette) });
+      onRuleChange({ ...rule, stops: classifyCategorical(features as any, rule.field, palette) }, { paletteId: palette.id });
     } else {
       const stops = classifyNumeric(features as any, rule.field, palette);
-      onRuleChange({ ...rule, stops, fallbackColor: palette.colors[0] });
+      onRuleChange({ ...rule, stops, fallbackColor: palette.colors[0] }, { paletteId: palette.id });
     }
   }
 
@@ -171,7 +181,7 @@ export default function AttributeStyleEditor({ fields, rule, featureCollection, 
                   gap: 3,
                   padding: '4px 6px',
                   borderRadius: 4,
-                  border: p.id === paletteId ? '2px solid var(--accent, #5b8cff)' : '1px solid var(--border)',
+                  border: p.id === activePaletteId ? '2px solid var(--accent, #5b8cff)' : '1px solid var(--border)',
                   background: 'var(--panel)',
                   cursor: 'pointer',
                 }}
@@ -306,16 +316,17 @@ function autoClassify(
   fieldName: string,
   fieldType: string | undefined,
   features: any[],
-  onRuleChange: (r: AttributeStyleRule) => void,
+  onRuleChange: (r: AttributeStyleRule, meta?: { paletteId?: string }) => void,
+  paletteId?: string,
 ) {
   const kind = inferSubMode(fieldType);
   if (kind === 'categorical') {
     const palette = QUALITATIVE_PALETTES[0];
-    onRuleChange({ kind: 'categorical', field: fieldName, channel: 'color', stops: classifyCategorical(features, fieldName, palette), fallbackColor: '#aaaaaa' });
+    onRuleChange({ kind: 'categorical', field: fieldName, channel: 'color', stops: classifyCategorical(features, fieldName, palette), fallbackColor: '#aaaaaa' }, { paletteId: paletteId || palette.id });
   } else {
     const palette = SEQUENTIAL_PALETTES[0];
     const stops = classifyNumeric(features, fieldName, palette);
-    onRuleChange({ kind: 'numeric', field: fieldName, channel: 'color', stops, fallbackColor: palette.colors[0] });
+    onRuleChange({ kind: 'numeric', field: fieldName, channel: 'color', stops, fallbackColor: palette.colors[0] }, { paletteId: paletteId || palette.id });
   }
 }
 

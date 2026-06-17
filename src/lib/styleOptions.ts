@@ -101,8 +101,13 @@ export type AttributeStyleRule =
       fallbackColor: string;
     };
 
+export type AttributeStyleMeta = {
+  paletteId?: string;
+};
+
 export type AttributeStyleOptions = {
   rule?: AttributeStyleRule;
+  meta?: AttributeStyleMeta;
 };
 
 export const defaultStyleOptions: GeometryStyleOptions = {

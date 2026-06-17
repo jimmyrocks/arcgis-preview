@@ -187,6 +187,13 @@ function getInitialAttributeStyle(): AttributeStyleOptions {
   } catch { return {}; }
 }
 
+function getInitialLegendCollapsed(): boolean {
+  try {
+    const v = (new URLSearchParams(location.search).get('legend') || '').toLowerCase();
+    return v === '0' || v === 'false' || v === 'collapsed' || v === 'hidden';
+  } catch { return false; }
+}
+
 // --- Geometry style URL (de)serialization -----------------------------------
 // Validate one style section (point/line/polygon/label) against the matching
 // defaults: only known keys whose value type matches the default are kept, so a
@@ -267,21 +274,14 @@ function decodeStyle(s: string): GeometryStyleOptions {
 
 // --- Attribute (color-by-field) style URL (de)serialization -----------------
 function encodeAttributeStyle(opts: AttributeStyleOptions): string {
-  // Own param so it stays independent of the geometry `style`. `count` is
-  // derived at classification time, so drop it to keep the URL compact
-  // (categorical fields can have many stops).
+  // Own param so it stays independent of the geometry `style`. Keep the full
+  // editor-visible rule here: colors, enabled classes, labels, counts, and
+  // lightweight UI metadata should all survive a shared-link round trip.
   try {
     const rule = opts?.rule;
     if (!rule) return '';
-    if (rule.kind === 'categorical') {
-      const stops = (rule.stops || []).map((stop) => {
-        const clone = { ...stop };
-        delete clone.count;
-        return clone;
-      });
-      return JSON.stringify({ rule: { ...rule, stops } });
-    }
-    return JSON.stringify({ rule });
+    const meta = opts.meta && Object.keys(opts.meta).length ? { meta: opts.meta } : {};
+    return JSON.stringify({ rule, ...meta });
   } catch { return ''; }
 }
 
@@ -299,18 +299,26 @@ function sanitizeAttributeStyle(obj: any): AttributeStyleOptions {
         color: st.color,
         ...(typeof st.label === 'string' ? { label: st.label } : {}),
         enabled: typeof st.enabled === 'boolean' ? st.enabled : true,
+        ...(Number.isFinite(st.count) ? { count: st.count } : {}),
       }));
     if (!stops.length) return {};
-    return { rule: { kind: 'categorical', field, channel: 'color', stops, fallbackColor } };
+    return withAttributeMeta({ rule: { kind: 'categorical', field, channel: 'color', stops, fallbackColor } }, obj?.meta);
   }
   if (rule.kind === 'numeric') {
     const stops: NumericStop[] = rule.stops
       .filter((st: any) => st && typeof st === 'object' && Number.isFinite(st.value) && typeof st.color === 'string')
       .map((st: any) => ({ value: st.value, color: st.color }));
     if (!stops.length) return {};
-    return { rule: { kind: 'numeric', field, channel: 'color', stops, fallbackColor } };
+    return withAttributeMeta({ rule: { kind: 'numeric', field, channel: 'color', stops, fallbackColor } }, obj?.meta);
   }
   return {};
+}
+
+function withAttributeMeta(style: AttributeStyleOptions, rawMeta: any): AttributeStyleOptions {
+  if (!rawMeta || typeof rawMeta !== 'object') return style;
+  const meta: NonNullable<AttributeStyleOptions['meta']> = {};
+  if (typeof rawMeta.paletteId === 'string' && rawMeta.paletteId) meta.paletteId = rawMeta.paletteId;
+  return Object.keys(meta).length ? { ...style, meta } : style;
 }
 
 function decodeAttributeStyle(s: string): AttributeStyleOptions {
@@ -667,21 +675,25 @@ export default function App() {
   const [styleMode, setStyleMode] = useState<StyleMode>(getInitialStyleMode());
   const [styleOptions, setStyleOptions] = useState<GeometryStyleOptions>(getInitialStyleOptions());
   const [attributeStyle, setAttributeStyle] = useState<AttributeStyleOptions>(getInitialAttributeStyle());
+  const [legendCollapsed, setLegendCollapsed] = useState<boolean>(getInitialLegendCollapsed());
 
   function handleStyleByField(fieldName: string) {
     const meta = (layerMeta?.fields as any[] | undefined)?.find((f: any) => f?.name === fieldName);
     const features = (featureCollection as any)?.features ?? [];
     const kind = inferSubMode(meta?.type);
     let rule: AttributeStyleOptions['rule'];
+    let paletteId: string;
     if (kind === 'categorical') {
       const palette = QUALITATIVE_PALETTES[0];
+      paletteId = palette.id;
       rule = { kind: 'categorical', field: fieldName, channel: 'color', stops: classifyCategorical(features, fieldName, palette), fallbackColor: '#aaaaaa' };
     } else {
       const palette = SEQUENTIAL_PALETTES[0];
+      paletteId = palette.id;
       const stops = classifyNumeric(features, fieldName, palette);
       rule = { kind: 'numeric', field: fieldName, channel: 'color', stops, fallbackColor: palette.colors[0] };
     }
-    setAttributeStyle({ rule });
+    setAttributeStyle({ rule, meta: { paletteId } });
     setStyleMode('attribute');
     setActiveTab('style');
   }
@@ -732,10 +744,13 @@ export default function App() {
           const astyle = styleMode === 'attribute' ? encodeAttributeStyle(attributeStyle) : '';
           if (astyle) params.set('astyle', astyle);
           else params.delete('astyle');
+          if (legendCollapsed) params.set('legend', '0');
+          else params.delete('legend');
         } else {
           params.delete('styleMode');
           params.delete('style');
           params.delete('astyle');
+          params.delete('legend');
         }
 
         const search = params.toString();
@@ -751,7 +766,7 @@ export default function App() {
     }, delay);
 
     return () => window.clearTimeout(timeoutId);
-  }, [activeTab, basemap, bbox, center, isMobile, selectedFeatureId, serviceUrl, styleMode, styleOptions, attributeStyle, where, zoom]);
+  }, [activeTab, basemap, bbox, center, isMobile, legendCollapsed, selectedFeatureId, serviceUrl, styleMode, styleOptions, attributeStyle, where, zoom]);
 
   // Keep header WHERE input mirrored with state
   useEffect(() => { setWhereInput(where || '1=1'); }, [where]);
@@ -1252,6 +1267,8 @@ export default function App() {
               geometryType={layerMeta?.geometryType}
               layerName={layerMeta?.name || (serviceMeta as any)?.mapName}
               fields={(layerMeta?.fields as any) || []}
+              collapsed={legendCollapsed}
+              onCollapsedChange={setLegendCollapsed}
             />
             </ErrorBoundary>
             {/* Empty state overlay when no layer is loaded */}

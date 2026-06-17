@@ -1,14 +1,24 @@
 import React from 'react';
 import type { WhereEditorHandle, WhereEditorProps } from './WhereEditor.types';
 
-const LazyWhereEditor = React.lazy(() => import('./WhereEditorCM'));
+let whereEditorCMPromise: Promise<{ default: React.ComponentType<any> }> | null = null;
+function loadWhereEditorCM() {
+  whereEditorCMPromise ||= import('./WhereEditorCM');
+  return whereEditorCMPromise;
+}
+
+const LazyWhereEditor = React.lazy(loadWhereEditorCM);
 
 // Lightweight fallback input while CodeMirror chunk loads
 function BasicWhereInputInner(props: WhereEditorProps, ref: React.ForwardedRef<WhereEditorHandle>) {
-  const { value, onChange, onCommit, placeholder = '1=1', height = '32px', wrap = false, commitKey = 'enter', readOnly = false, fields, fieldsMeta, valueSamples, fieldAliases, keywords, ...rest } = props as any;
+  const { value, onChange, onCommit, placeholder = '1=1', height = '32px', wrap = false, commitKey = 'enter', readOnly = false, fields, fieldsMeta, valueSamples, fieldAliases, keywords, richLoad, onFocus, onBlur, onRequestRichEditor, onBasicFocusChange, ...rest } = props as any;
   const inputRef = React.useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
+  const requestRichEditor = () => {
+    try { onRequestRichEditor?.(); } catch {}
+  };
   React.useImperativeHandle(ref, () => ({
     insertAtCursor(text: string) {
+      requestRichEditor();
       const el = inputRef.current as HTMLInputElement | HTMLTextAreaElement | null;
       if (!el) return;
       const start = (el.selectionStart ?? String(value || '').length);
@@ -22,6 +32,7 @@ function BasicWhereInputInner(props: WhereEditorProps, ref: React.ForwardedRef<W
       } catch {}
     },
     insertSnippet(text: string, cursorBack: number) {
+      requestRichEditor();
       const el = inputRef.current as HTMLInputElement | HTMLTextAreaElement | null;
       if (!el) return;
       const start = (el.selectionStart ?? String(value || '').length);
@@ -34,7 +45,7 @@ function BasicWhereInputInner(props: WhereEditorProps, ref: React.ForwardedRef<W
         el.focus();
       } catch {}
     },
-    focus() { try { inputRef.current?.focus(); } catch {} },
+    focus() { requestRichEditor(); try { inputRef.current?.focus(); } catch {} },
   }), [value, onChange]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -56,6 +67,15 @@ function BasicWhereInputInner(props: WhereEditorProps, ref: React.ForwardedRef<W
     color: 'var(--text)'
   };
   const isMulti = wrap || (parseInt(String(height).replace(/[^0-9]/g, ''), 10) || 0) > 40;
+  const handleFocus = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    try { onBasicFocusChange?.(true); } catch {}
+    requestRichEditor();
+    try { onFocus?.(e); } catch {}
+  };
+  const handleBlur = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    try { onBasicFocusChange?.(false); } catch {}
+    try { onBlur?.(e); } catch {}
+  };
   if (isMulti) {
     return (
       <textarea
@@ -63,6 +83,8 @@ function BasicWhereInputInner(props: WhereEditorProps, ref: React.ForwardedRef<W
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={onKeyDown}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
         placeholder={placeholder}
         rows={Math.max(2, Math.min(8, Math.round(((parseInt(String(height).replace(/[^0-9]/g, ''), 10) || 60) - 8) / 18)))}
         readOnly={readOnly}
@@ -77,6 +99,8 @@ function BasicWhereInputInner(props: WhereEditorProps, ref: React.ForwardedRef<W
       value={value}
       onChange={(e) => onChange(e.target.value)}
       onKeyDown={onKeyDown}
+      onFocus={handleFocus}
+      onBlur={handleBlur}
       placeholder={placeholder}
       readOnly={readOnly}
       style={commonStyle}
@@ -87,11 +111,38 @@ function BasicWhereInputInner(props: WhereEditorProps, ref: React.ForwardedRef<W
 const BasicWhereInput = React.forwardRef(BasicWhereInputInner as any) as any;
 
 function WhereEditorInner(props: WhereEditorProps, ref: React.ForwardedRef<WhereEditorHandle>) {
+  const richLoad = props.richLoad || 'on-focus';
+  const [richReady, setRichReady] = React.useState(false);
+  const [basicFocused, setBasicFocused] = React.useState(false);
+  const requestRichEditor = React.useCallback(() => {
+    if (richLoad === 'never') return;
+    void loadWhereEditorCM().then(() => setRichReady(true));
+  }, [richLoad]);
+
+  React.useEffect(() => {
+    if (richLoad === 'immediate') requestRichEditor();
+    if (richLoad === 'never') setRichReady(false);
+  }, [richLoad, requestRichEditor]);
+
+  const shouldLoadRich = richLoad !== 'never' && (richLoad === 'immediate' || (richReady && !basicFocused));
+
+  const handleRequestRich = React.useCallback(() => {
+    requestRichEditor();
+  }, [requestRichEditor]);
+  const basicProps = React.useMemo(
+    () => ({ ...props, onRequestRichEditor: handleRequestRich, onBasicFocusChange: setBasicFocused }),
+    [props, handleRequestRich],
+  );
+
   return (
     <div style={{ flex: '1 1 auto' }}>
-      <React.Suspense fallback={<BasicWhereInput ref={ref as any} {...props} />}>
-        {React.createElement(LazyWhereEditor as any, { ...(props as any), ref: ref as any })}
-      </React.Suspense>
+      {shouldLoadRich ? (
+        <React.Suspense fallback={<BasicWhereInput ref={ref as any} {...basicProps} />}>
+          {React.createElement(LazyWhereEditor as any, { ...(props as any), ref: ref as any })}
+        </React.Suspense>
+      ) : (
+        <BasicWhereInput ref={ref as any} {...basicProps} />
+      )}
     </div>
   );
 }

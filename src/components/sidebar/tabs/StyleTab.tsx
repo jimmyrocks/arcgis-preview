@@ -281,8 +281,13 @@ export default function StyleTab({
               <AttributeStyleEditor
                 fields={fields}
                 rule={attributeStyle?.rule}
+                paletteId={attributeStyle?.meta?.paletteId}
                 featureCollection={featureCollection}
-                onRuleChange={(rule) => onAttributeStyleChange?.({ rule })}
+                onRuleChange={(rule, meta) => onAttributeStyleChange?.({
+                  ...attributeStyle,
+                  rule,
+                  meta: { ...attributeStyle?.meta, ...meta },
+                })}
                 geometryType={geometryType}
               />
             ) : (
