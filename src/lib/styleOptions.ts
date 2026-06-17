@@ -1,20 +1,56 @@
 export const POINT_ICON_OPTIONS = [
-  { id: 'odl-marker', label: 'Pin' },
-  { id: 'odl-circle-dot', label: 'Dot' },
-  { id: 'odl-square', label: 'Square' },
-  { id: 'odl-diamond', label: 'Diamond' },
-  { id: 'odl-triangle', label: 'Triangle' },
-  { id: 'odl-star', label: 'Star' },
-  { id: 'odl-cross', label: 'Cross' },
-  { id: 'odl-flag', label: 'Flag' },
+  { id: 'odl-marker', label: 'Pin', group: 'Basic' },
+  { id: 'odl-circle-dot', label: 'Dot', group: 'Basic' },
+  { id: 'odl-square', label: 'Square', group: 'Basic' },
+  { id: 'odl-diamond', label: 'Diamond', group: 'Basic' },
+  { id: 'odl-triangle', label: 'Triangle', group: 'Basic' },
+  { id: 'odl-star', label: 'Star', group: 'Basic' },
+  { id: 'odl-cross', label: 'Cross', group: 'Basic' },
+  { id: 'odl-flag', label: 'Flag', group: 'Basic' },
+  { id: 'pinhead-p', label: 'Parking', group: 'Map symbols' },
+  { id: 'pinhead-bus', label: 'Bus', group: 'Map symbols' },
+  { id: 'pinhead-car', label: 'Car', group: 'Map symbols' },
+  { id: 'pinhead-bicycle', label: 'Bicycle', group: 'Map symbols' },
+  { id: 'pinhead-charging_station', label: 'Charging station', group: 'Map symbols' },
+  { id: 'pinhead-campsite', label: 'Campsite', group: 'Map symbols' },
+  { id: 'pinhead-broadleaved_tree', label: 'Tree', group: 'Map symbols' },
+  { id: 'pinhead-bench', label: 'Bench', group: 'Map symbols' },
+  { id: 'pinhead-spoon_and_fork', label: 'Food', group: 'Map symbols' },
+  { id: 'pinhead-water_tap', label: 'Water tap', group: 'Map symbols' },
+  { id: 'pinhead-wc_text', label: 'Restrooms', group: 'Map symbols' },
+  { id: 'pinhead-bag_with_greek_cross', label: 'Medical', group: 'Map symbols' },
+  { id: 'pinhead-book', label: 'Book', group: 'Map symbols' },
+  { id: 'pinhead-camera', label: 'Camera', group: 'Map symbols' },
+  { id: 'pinhead-town_buildings', label: 'Buildings', group: 'Map symbols' },
+  { id: 'pinhead-utility_pole', label: 'Utility pole', group: 'Map symbols' },
 ] as const;
 
 export const DEFAULT_POINT_ICON_ID = POINT_ICON_OPTIONS[0].id;
+
+export const POINT_ICON_ANCHOR_OPTIONS = [
+  'center',
+  'top',
+  'bottom',
+  'left',
+  'right',
+  'top-left',
+  'top-right',
+  'bottom-left',
+  'bottom-right',
+] as const;
+
+export const POINT_ICON_ALIGNMENT_OPTIONS = ['auto', 'map', 'viewport'] as const;
 
 export type PointStyleOptions = {
   symbol?: 'circle' | 'icon';
   icon?: string;
   iconSize?: number; // intended display size in px
+  iconAnchor?: typeof POINT_ICON_ANCHOR_OPTIONS[number];
+  iconAllowOverlap?: boolean;
+  iconIgnorePlacement?: boolean;
+  iconRotate?: number; // degrees
+  iconRotationAlignment?: typeof POINT_ICON_ALIGNMENT_OPTIONS[number];
+  iconPitchAlignment?: typeof POINT_ICON_ALIGNMENT_OPTIONS[number];
   stroke?: boolean; // default true
   color?: string; // stroke color
   weight?: number; // stroke width in px
@@ -115,6 +151,12 @@ export const defaultStyleOptions: GeometryStyleOptions = {
     symbol: 'circle',
     icon: DEFAULT_POINT_ICON_ID,
     iconSize: 24,
+    iconAnchor: 'center',
+    iconAllowOverlap: false,
+    iconIgnorePlacement: false,
+    iconRotate: 0,
+    iconRotationAlignment: 'auto',
+    iconPitchAlignment: 'auto',
     stroke: true,
     color: '#3388ff',
     weight: 2,

@@ -10,6 +10,7 @@ import DownloadTab from '../tabs/DownloadTab';
 import StyleTab from '../tabs/StyleTab';
 import type { GeometryStyleOptions, AttributeStyleOptions, StyleMode } from '../../../lib/styleOptions';
 import { GITHUB_ISSUES_URL, GITHUB_FORK_URL, GITHUB_REPO_URL } from '../../../lib/links';
+import { buildInfo } from '../../../lib/buildInfo';
 
 function ContributeFooter() {
   const [open, setOpen] = React.useState(false);
@@ -36,6 +37,9 @@ function ContributeFooter() {
           <a href={GITHUB_ISSUES_URL} target="_blank" rel="noreferrer noopener" onClick={() => setOpen(false)} style={{ display: 'block', padding: '6px 14px', color: 'var(--text)', textDecoration: 'none', fontSize: 13 }}>Report an issue</a>
           <a href={GITHUB_FORK_URL} target="_blank" rel="noreferrer noopener" onClick={() => setOpen(false)} style={{ display: 'block', padding: '6px 14px', color: 'var(--text)', textDecoration: 'none', fontSize: 13 }}>Fork on GitHub</a>
           <a href={GITHUB_REPO_URL} target="_blank" rel="noreferrer noopener" onClick={() => setOpen(false)} style={{ display: 'block', padding: '6px 14px', color: 'var(--text)', textDecoration: 'none', fontSize: 13 }}>Repository</a>
+          <div style={{ marginTop: 4, borderTop: '1px solid var(--border)', padding: '7px 14px 5px', color: 'var(--muted)', fontSize: 11, lineHeight: 1.35, whiteSpace: 'nowrap' }}>
+            Build {buildInfo.gitSha}
+          </div>
         </div>
       ) : null}
     </div>

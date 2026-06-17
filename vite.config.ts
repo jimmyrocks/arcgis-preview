@@ -1,6 +1,15 @@
 import { defineConfig } from 'vite';
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+
+function getGitSha(): string {
+  try {
+    return execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
+  } catch {
+    return 'unknown';
+  }
+}
 
 // For GitHub Pages under repo "arcgis-preview", use base 
 // "/arcgis-preview/" in production so asset URLs work when hosted
@@ -11,10 +20,14 @@ export default defineConfig(({ mode }) => {
       ? path.resolve(__dirname, '../source-arcgis-rest/dist/index.mjs')
       : path.resolve(__dirname, '../source-arcgis-rest/src/index.ts');
   const sourceArcgisWorker = path.resolve(__dirname, '../source-arcgis-rest/dist/workers/arcgisWorker.mjs');
+  const gitSha = getGitSha();
 
   return {
     base: mode === 'production' ? '/arcgis-preview/' : '/',
     root: '.',
+    define: {
+      __APP_GIT_SHA__: JSON.stringify(gitSha)
+    },
     plugins:
       mode === 'production'
         ? [

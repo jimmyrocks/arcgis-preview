@@ -1,6 +1,6 @@
 import type { LayerSpecification } from 'maplibre-gl';
 import type { AttributeStyleRule, GeometryStyleOptions } from './styleOptions';
-import { DEFAULT_POINT_ICON_ID, defaultStyleOptions } from './styleOptions';
+import { DEFAULT_POINT_ICON_ID, POINT_ICON_ALIGNMENT_OPTIONS, POINT_ICON_ANCHOR_OPTIONS, defaultStyleOptions } from './styleOptions';
 
 export type GeometryKind = 'point' | 'polyline' | 'polygon';
 
@@ -34,6 +34,10 @@ function buildPointIconLayer(
   color: unknown
 ): LayerSpecification {
   const iconSize = Math.max(10, Math.min(80, Number(style.point?.iconSize) || 24));
+  const iconAnchor = POINT_ICON_ANCHOR_OPTIONS.includes(style.point?.iconAnchor as any) ? style.point?.iconAnchor : 'center';
+  const iconRotationAlignment = POINT_ICON_ALIGNMENT_OPTIONS.includes(style.point?.iconRotationAlignment as any) ? style.point?.iconRotationAlignment : 'auto';
+  const iconPitchAlignment = POINT_ICON_ALIGNMENT_OPTIONS.includes(style.point?.iconPitchAlignment as any) ? style.point?.iconPitchAlignment : 'auto';
+  const iconRotate = Math.max(-360, Math.min(360, Number(style.point?.iconRotate) || 0));
   return {
     id: `${layerIdPrefix}-point-icon`,
     type: 'symbol',
@@ -41,9 +45,12 @@ function buildPointIconLayer(
     layout: {
       'icon-image': style.point?.icon || DEFAULT_POINT_ICON_ID,
       'icon-size': iconSize / 64,
-      'icon-anchor': 'center',
-      'icon-allow-overlap': false,
-      'icon-ignore-placement': false,
+      'icon-anchor': iconAnchor,
+      'icon-allow-overlap': !!style.point?.iconAllowOverlap,
+      'icon-ignore-placement': !!style.point?.iconIgnorePlacement,
+      'icon-rotate': iconRotate,
+      'icon-rotation-alignment': iconRotationAlignment,
+      'icon-pitch-alignment': iconPitchAlignment,
     },
     paint: {
       'icon-color': color as any,

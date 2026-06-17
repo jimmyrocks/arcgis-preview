@@ -1,7 +1,7 @@
 import React from 'react';
 import type { FeatureCollection } from 'geojson';
 import type { GeometryStyleOptions, AttributeStyleOptions, StyleMode } from '../../../lib/styleOptions';
-import { DEFAULT_POINT_ICON_ID, POINT_ICON_OPTIONS, defaultStyleOptions } from '../../../lib/styleOptions';
+import { DEFAULT_POINT_ICON_ID, POINT_ICON_ALIGNMENT_OPTIONS, POINT_ICON_ANCHOR_OPTIONS, POINT_ICON_OPTIONS, defaultStyleOptions } from '../../../lib/styleOptions';
 import AttributeStyleEditor from '../components/AttributeStyleEditor';
 
 export default function StyleTab({
@@ -114,10 +114,17 @@ export default function StyleTab({
       {/* Custom style section — geometry controls + color source */}
       {isCustom && (
         <>
+          <AdvancedToggle showAdvanced={showAdvanced} onToggle={() => setShowAdvanced(v => !v)} />
+
           {/* Geometry controls — always shown in custom mode */}
           {(kind === 'point' || !kind) && (
             <fieldset>
-              <legend style={{ fontWeight: 600 }}>Points</legend>
+              <legend style={{ fontWeight: 600 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  Points
+                  <AdvancedToggle showAdvanced={showAdvanced} onToggle={() => setShowAdvanced(v => !v)} compact />
+                </span>
+              </legend>
               <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
                 <label htmlFor="ptSymbol">Symbol</label>
                 <select id="ptSymbol" value={opts.point.symbol} onChange={(e) => update({ point: { ...opts.point, symbol: e.target.value as any } })}>
@@ -128,8 +135,12 @@ export default function StyleTab({
                   <>
                     <label htmlFor="ptIcon">Icon</label>
                     <select id="ptIcon" value={opts.point.icon} onChange={(e) => update({ point: { ...opts.point, icon: e.target.value } })}>
-                      {POINT_ICON_OPTIONS.map((icon) => (
-                        <option key={icon.id} value={icon.id}>{icon.label}</option>
+                      {groupPointIcons().map((group) => (
+                        <optgroup key={group.label} label={group.label}>
+                          {group.icons.map((icon) => (
+                            <option key={icon.id} value={icon.id}>{icon.label}</option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
                     {!isAttribute && (
@@ -142,6 +153,34 @@ export default function StyleTab({
                     <input id="ptIconSize" type="number" min={10} max={80} step={1} value={opts.point.iconSize} onChange={(e) => update({ point: { ...opts.point, iconSize: toNumber(e.target.value, 24) } })} />
                     <label htmlFor="ptIconOpacity">Opacity</label>
                     <input id="ptIconOpacity" type="range" min={0} max={1} step={0.05} value={opts.point.fillOpacity} onChange={(e) => update({ point: { ...opts.point, fillOpacity: toNumber(e.target.value, 1) } })} />
+                    {showAdvanced && (
+                      <>
+                        <label htmlFor="ptIconAllowOverlap">Allow overlap</label>
+                        <input id="ptIconAllowOverlap" type="checkbox" checked={!!opts.point.iconAllowOverlap} onChange={(e) => update({ point: { ...opts.point, iconAllowOverlap: e.target.checked } })} />
+                        <label htmlFor="ptIconIgnorePlacement">Ignore placement</label>
+                        <input id="ptIconIgnorePlacement" type="checkbox" checked={!!opts.point.iconIgnorePlacement} onChange={(e) => update({ point: { ...opts.point, iconIgnorePlacement: e.target.checked } })} />
+                        <label htmlFor="ptIconAnchor">Anchor</label>
+                        <select id="ptIconAnchor" value={opts.point.iconAnchor} onChange={(e) => update({ point: { ...opts.point, iconAnchor: e.target.value as any } })}>
+                          {POINT_ICON_ANCHOR_OPTIONS.map((anchor) => (
+                            <option key={anchor} value={anchor}>{formatOptionLabel(anchor)}</option>
+                          ))}
+                        </select>
+                        <label htmlFor="ptIconRotate">Rotate (deg)</label>
+                        <input id="ptIconRotate" type="number" min={-360} max={360} step={1} value={opts.point.iconRotate} onChange={(e) => update({ point: { ...opts.point, iconRotate: toNumber(e.target.value, 0) } })} />
+                        <label htmlFor="ptIconRotationAlignment">Rotation alignment</label>
+                        <select id="ptIconRotationAlignment" value={opts.point.iconRotationAlignment} onChange={(e) => update({ point: { ...opts.point, iconRotationAlignment: e.target.value as any } })}>
+                          {POINT_ICON_ALIGNMENT_OPTIONS.map((alignment) => (
+                            <option key={alignment} value={alignment}>{formatOptionLabel(alignment)}</option>
+                          ))}
+                        </select>
+                        <label htmlFor="ptIconPitchAlignment">Pitch alignment</label>
+                        <select id="ptIconPitchAlignment" value={opts.point.iconPitchAlignment} onChange={(e) => update({ point: { ...opts.point, iconPitchAlignment: e.target.value as any } })}>
+                          {POINT_ICON_ALIGNMENT_OPTIONS.map((alignment) => (
+                            <option key={alignment} value={alignment}>{formatOptionLabel(alignment)}</option>
+                          ))}
+                        </select>
+                      </>
+                    )}
                   </>
                 ) : (
                   <>
@@ -170,7 +209,12 @@ export default function StyleTab({
 
           {(kind === 'line' || !kind) && (
             <fieldset>
-              <legend style={{ fontWeight: 600 }}>Lines</legend>
+              <legend style={{ fontWeight: 600 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  Lines
+                  <AdvancedToggle showAdvanced={showAdvanced} onToggle={() => setShowAdvanced(v => !v)} compact />
+                </span>
+              </legend>
               <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
                 {!isAttribute && (
                   <>
@@ -208,7 +252,12 @@ export default function StyleTab({
 
           {(kind === 'polygon' || !kind) && (
             <fieldset>
-              <legend style={{ fontWeight: 600 }}>Polygons</legend>
+              <legend style={{ fontWeight: 600 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  Polygons
+                  <AdvancedToggle showAdvanced={showAdvanced} onToggle={() => setShowAdvanced(v => !v)} compact />
+                </span>
+              </legend>
               <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
                 <label htmlFor="pgColor">Stroke color</label>
                 <input id="pgColor" type="color" value={opts.polygon.color} onChange={(e) => update({ polygon: { ...opts.polygon, color: e.target.value } })} />
@@ -298,7 +347,12 @@ export default function StyleTab({
           </div>
 
           <fieldset>
-            <legend style={{ fontWeight: 600 }}>Labels</legend>
+            <legend style={{ fontWeight: 600 }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                Labels
+                <AdvancedToggle showAdvanced={showAdvanced} onToggle={() => setShowAdvanced(v => !v)} compact />
+              </span>
+            </legend>
             <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
               <label htmlFor="labelField">Label field</label>
               <select
@@ -380,25 +434,6 @@ export default function StyleTab({
 
       {/* Footer buttons */}
       <div style={{ display: 'flex', gap: 8 }}>
-        {isCustom && (
-          <button
-            type="button"
-            onClick={() => setShowAdvanced(v => !v)}
-            style={{
-              padding: '6px 8px',
-              fontSize: 12,
-              borderRadius: 6,
-              border: '1px solid var(--border)',
-              background: 'var(--panel-subtle)',
-              color: 'var(--muted)',
-              cursor: 'pointer',
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--muted)'; }}
-          >
-            {showAdvanced ? 'Fewer options' : 'More options'}
-          </button>
-        )}
         <button
           type="button"
           onClick={() => {
@@ -434,6 +469,12 @@ function normalize(options: GeometryStyleOptions): Required<GeometryStyleOptions
       symbol: options.point?.symbol === 'icon' ? 'icon' : 'circle',
       icon: POINT_ICON_OPTIONS.some((icon) => icon.id === options.point?.icon) ? options.point?.icon : DEFAULT_POINT_ICON_ID,
       iconSize: clampNum(options.point?.iconSize ?? defaultStyleOptions.point?.iconSize ?? 24, 10, 80),
+      iconAnchor: POINT_ICON_ANCHOR_OPTIONS.includes(options.point?.iconAnchor as any) ? options.point?.iconAnchor : defaultStyleOptions.point?.iconAnchor ?? 'center',
+      iconAllowOverlap: !!options.point?.iconAllowOverlap,
+      iconIgnorePlacement: !!options.point?.iconIgnorePlacement,
+      iconRotate: clampNum(options.point?.iconRotate ?? defaultStyleOptions.point?.iconRotate ?? 0, -360, 360),
+      iconRotationAlignment: POINT_ICON_ALIGNMENT_OPTIONS.includes(options.point?.iconRotationAlignment as any) ? options.point?.iconRotationAlignment : defaultStyleOptions.point?.iconRotationAlignment ?? 'auto',
+      iconPitchAlignment: POINT_ICON_ALIGNMENT_OPTIONS.includes(options.point?.iconPitchAlignment as any) ? options.point?.iconPitchAlignment : defaultStyleOptions.point?.iconPitchAlignment ?? 'auto',
       stroke: options.point?.stroke !== false,
       color: options.point?.color ?? '#3388ff',
       weight: clampNum(options.point?.weight ?? 2, 0, 50),
@@ -491,3 +532,48 @@ function inferKind(geometryType?: string | null): 'point' | 'line' | 'polygon' |
 function clamp01(n: number): number { if (!Number.isFinite(n)) return 0; return Math.max(0, Math.min(1, n)); }
 function clampNum(n: number, min: number, max: number): number { if (!Number.isFinite(n)) return min; return Math.max(min, Math.min(max, n)); }
 function toNumber(v: string, d: number): number { const n = Number(v); return Number.isFinite(n) ? n : d; }
+function formatOptionLabel(value: string): string {
+  return value.split('-').map((part) => part ? part[0].toUpperCase() + part.slice(1) : part).join(' ');
+}
+
+function AdvancedToggle({ showAdvanced, onToggle, compact = false }: { showAdvanced: boolean; onToggle: () => void; compact?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={showAdvanced}
+      title={showAdvanced ? 'Hide advanced style controls' : 'Show advanced style controls'}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        padding: compact ? '2px 7px' : '5px 9px',
+        fontSize: compact ? 11 : 12,
+        fontWeight: 600,
+        lineHeight: 1.2,
+        borderRadius: 9999,
+        border: `1px solid ${showAdvanced ? 'var(--accent, #5b8cff)' : 'var(--border)'}`,
+        background: showAdvanced ? 'rgba(91, 140, 255, 0.14)' : 'var(--panel-subtle)',
+        color: showAdvanced ? 'var(--accent, #5b8cff)' : 'var(--text)',
+        cursor: 'pointer',
+      }}
+    >
+      <span aria-hidden="true" style={{ fontSize: compact ? 10 : 11 }}>{showAdvanced ? '-' : '+'}</span>
+      {showAdvanced ? 'Advanced on' : 'More options'}
+    </button>
+  );
+}
+
+function groupPointIcons() {
+  const groups: Array<{ label: string; icons: typeof POINT_ICON_OPTIONS[number][] }> = [];
+  for (const icon of POINT_ICON_OPTIONS) {
+    const label = icon.group || 'Other';
+    let group = groups.find((item) => item.label === label);
+    if (!group) {
+      group = { label, icons: [] };
+      groups.push(group);
+    }
+    group.icons.push(icon);
+  }
+  return groups;
+}

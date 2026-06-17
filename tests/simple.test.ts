@@ -212,7 +212,21 @@ function test_esriStyle() {
   const iconPointLayers = buildCustomLayers(
     'arc-source',
     'point',
-    { point: { symbol: 'icon', icon: 'odl-star', iconSize: 32, fillColor: '#222222', fillOpacity: 0.8 } },
+    {
+      point: {
+        symbol: 'icon',
+        icon: 'odl-star',
+        iconSize: 32,
+        fillColor: '#222222',
+        fillOpacity: 0.8,
+        iconAnchor: 'bottom',
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        iconRotate: 45,
+        iconRotationAlignment: 'map',
+        iconPitchAlignment: 'viewport'
+      }
+    },
     'test-style'
   );
   assertEqual(iconPointLayers.length, 1, 'buildCustomLayers: point icon layer count');
@@ -220,6 +234,12 @@ function test_esriStyle() {
   assertEqual(iconPointLayers[0].type, 'symbol', 'buildCustomLayers: point icon layer type');
   assertEqual((iconPointLayers[0] as any).layout['icon-image'], 'odl-star', 'buildCustomLayers: point icon image');
   assertEqual((iconPointLayers[0] as any).layout['icon-size'], 0.5, 'buildCustomLayers: point icon size');
+  assertEqual((iconPointLayers[0] as any).layout['icon-anchor'], 'bottom', 'buildCustomLayers: point icon anchor');
+  assertEqual((iconPointLayers[0] as any).layout['icon-allow-overlap'], true, 'buildCustomLayers: point icon allow overlap');
+  assertEqual((iconPointLayers[0] as any).layout['icon-ignore-placement'], true, 'buildCustomLayers: point icon ignore placement');
+  assertEqual((iconPointLayers[0] as any).layout['icon-rotate'], 45, 'buildCustomLayers: point icon rotate');
+  assertEqual((iconPointLayers[0] as any).layout['icon-rotation-alignment'], 'map', 'buildCustomLayers: point icon rotation alignment');
+  assertEqual((iconPointLayers[0] as any).layout['icon-pitch-alignment'], 'viewport', 'buildCustomLayers: point icon pitch alignment');
   assertEqual((iconPointLayers[0] as any).paint['icon-color'], '#222222', 'buildCustomLayers: point icon color');
 }
 
