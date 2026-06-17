@@ -114,17 +114,10 @@ export default function StyleTab({
       {/* Custom style section — geometry controls + color source */}
       {isCustom && (
         <>
-          <AdvancedToggle showAdvanced={showAdvanced} onToggle={() => setShowAdvanced(v => !v)} />
-
           {/* Geometry controls — always shown in custom mode */}
           {(kind === 'point' || !kind) && (
             <fieldset>
-              <legend style={{ fontWeight: 600 }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  Points
-                  <AdvancedToggle showAdvanced={showAdvanced} onToggle={() => setShowAdvanced(v => !v)} compact />
-                </span>
-              </legend>
+              <legend style={{ fontWeight: 600 }}>Points</legend>
               <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
                 <label htmlFor="ptSymbol">Symbol</label>
                 <select id="ptSymbol" value={opts.point.symbol} onChange={(e) => update({ point: { ...opts.point, symbol: e.target.value as any } })}>
@@ -204,17 +197,13 @@ export default function StyleTab({
                   </>
                 )}
               </div>
+              <AdvancedToggleFooter showAdvanced={showAdvanced} onToggle={() => setShowAdvanced(v => !v)} />
             </fieldset>
           )}
 
           {(kind === 'line' || !kind) && (
             <fieldset>
-              <legend style={{ fontWeight: 600 }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  Lines
-                  <AdvancedToggle showAdvanced={showAdvanced} onToggle={() => setShowAdvanced(v => !v)} compact />
-                </span>
-              </legend>
+              <legend style={{ fontWeight: 600 }}>Lines</legend>
               <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
                 {!isAttribute && (
                   <>
@@ -247,17 +236,13 @@ export default function StyleTab({
                   </>
                 )}
               </div>
+              <AdvancedToggleFooter showAdvanced={showAdvanced} onToggle={() => setShowAdvanced(v => !v)} />
             </fieldset>
           )}
 
           {(kind === 'polygon' || !kind) && (
             <fieldset>
-              <legend style={{ fontWeight: 600 }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  Polygons
-                  <AdvancedToggle showAdvanced={showAdvanced} onToggle={() => setShowAdvanced(v => !v)} compact />
-                </span>
-              </legend>
+              <legend style={{ fontWeight: 600 }}>Polygons</legend>
               <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
                 <label htmlFor="pgColor">Stroke color</label>
                 <input id="pgColor" type="color" value={opts.polygon.color} onChange={(e) => update({ polygon: { ...opts.polygon, color: e.target.value } })} />
@@ -287,6 +272,7 @@ export default function StyleTab({
                   </>
                 )}
               </div>
+              <AdvancedToggleFooter showAdvanced={showAdvanced} onToggle={() => setShowAdvanced(v => !v)} />
             </fieldset>
           )}
 
@@ -347,12 +333,7 @@ export default function StyleTab({
           </div>
 
           <fieldset>
-            <legend style={{ fontWeight: 600 }}>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                Labels
-                <AdvancedToggle showAdvanced={showAdvanced} onToggle={() => setShowAdvanced(v => !v)} compact />
-              </span>
-            </legend>
+            <legend style={{ fontWeight: 600 }}>Labels</legend>
             <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
               <label htmlFor="labelField">Label field</label>
               <select
@@ -428,6 +409,7 @@ export default function StyleTab({
                 </>
               )}
             </div>
+            <AdvancedToggleFooter showAdvanced={showAdvanced} onToggle={() => setShowAdvanced(v => !v)} />
           </fieldset>
         </>
       )}
@@ -534,6 +516,14 @@ function clampNum(n: number, min: number, max: number): number { if (!Number.isF
 function toNumber(v: string, d: number): number { const n = Number(v); return Number.isFinite(n) ? n : d; }
 function formatOptionLabel(value: string): string {
   return value.split('-').map((part) => part ? part[0].toUpperCase() + part.slice(1) : part).join(' ');
+}
+
+function AdvancedToggleFooter({ showAdvanced, onToggle }: { showAdvanced: boolean; onToggle: () => void }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+      <AdvancedToggle showAdvanced={showAdvanced} onToggle={onToggle} compact />
+    </div>
+  );
 }
 
 function AdvancedToggle({ showAdvanced, onToggle, compact = false }: { showAdvanced: boolean; onToggle: () => void; compact?: boolean }) {
