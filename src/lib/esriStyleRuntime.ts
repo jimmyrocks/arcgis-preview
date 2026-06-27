@@ -3,6 +3,7 @@ import { applyRendererAsync, clearRendererArtifacts } from '@opendataland/source
 import type { AttributeStyleOptions, GeometryStyleOptions, StyleMode } from './styleOptions';
 import { buildAttributeLayers, buildCustomLayers, type GeometryKind } from './esriStyle';
 import { registerDefaultPointIcons } from './mapIcons';
+import { getRenderableArcgisRenderer } from './arcgisRenderer';
 
 const DEFAULT_RENDERER_LAYER_PREFIX = 'arcgis-style';
 const DEFAULT_CUSTOM_LAYER_PREFIX = 'arcgis-custom';
@@ -120,27 +121,32 @@ export async function applyFeatureSourceStyle({
 
   const hitLayerId = resolveLineHitLayerId(customLayerPrefix, lineHitLayerId);
 
-  if (styleMode === 'server' && renderer) {
-    const rendererLayerIds = await applyRendererAsync(map, renderer, {
-      sourceId,
-      geometryType: geometry,
-      layerIdPrefix: rendererLayerPrefix,
-      removeExisting: true
-    });
-    const fallbackIds = addPointLabelFallback(
-      map,
-      rendererLayerIds,
-      sourceId,
-      geometry,
-      rendererLayerPrefix,
-      pointLabelFallbackColor
-    );
-    const lineHitId = geometry === 'polyline' ? addLineHitLayer(map, sourceId, hitLayerId) : null;
-    const visualLayerIds = [...rendererLayerIds, ...fallbackIds];
-    return {
-      visualLayerIds,
-      interactiveLayerIds: [...visualLayerIds, ...(lineHitId ? [lineHitId] : [])]
-    };
+  const serverRenderer = getRenderableArcgisRenderer(renderer);
+  if (styleMode === 'server' && serverRenderer) {
+    try {
+      const rendererLayerIds = await applyRendererAsync(map, serverRenderer as any, {
+        sourceId,
+        geometryType: geometry,
+        layerIdPrefix: rendererLayerPrefix,
+        removeExisting: true
+      });
+      if (rendererLayerIds.length) {
+        const fallbackIds = addPointLabelFallback(
+          map,
+          rendererLayerIds,
+          sourceId,
+          geometry,
+          rendererLayerPrefix,
+          pointLabelFallbackColor
+        );
+        const lineHitId = geometry === 'polyline' ? addLineHitLayer(map, sourceId, hitLayerId) : null;
+        const visualLayerIds = [...rendererLayerIds, ...fallbackIds];
+        return {
+          visualLayerIds,
+          interactiveLayerIds: [...visualLayerIds, ...(lineHitId ? [lineHitId] : [])]
+        };
+      }
+    } catch {}
   }
 
   const rule = styleMode === 'attribute' ? attributeStyle?.rule : undefined;

@@ -2,6 +2,7 @@ import React from 'react';
 import type { FeatureCollection } from 'geojson';
 import type { GeometryStyleOptions, AttributeStyleOptions, StyleMode } from '../../../lib/styleOptions';
 import { DEFAULT_POINT_ICON_ID, POINT_ICON_ALIGNMENT_OPTIONS, POINT_ICON_ANCHOR_OPTIONS, POINT_ICON_OPTIONS, defaultStyleOptions } from '../../../lib/styleOptions';
+import { describeArcgisRenderer, getRenderableArcgisRenderer, pickArcgisRendererSymbol } from '../../../lib/arcgisRenderer';
 import AttributeStyleEditor from '../components/AttributeStyleEditor';
 
 export default function StyleTab({
@@ -16,10 +17,14 @@ export default function StyleTab({
   onAttributeStyleChange,
   fields,
   featureCollection,
+  renderer,
+  renderMode = 'feature',
 }: {
   mode?: StyleMode;
   options?: GeometryStyleOptions;
   geometryType?: string | null;
+  renderMode?: 'feature' | 'dynamic' | 'fallback_dynamic' | 'image' | 'vector';
+  renderer?: any;
   onModeChange?: (mode: StyleMode) => void;
   onOptionsChange?: (opts: GeometryStyleOptions) => void;
   layerOpacity?: number;
@@ -29,13 +34,22 @@ export default function StyleTab({
   fields?: Array<{ name: string; type?: string; alias?: string }>;
   featureCollection?: FeatureCollection;
 }) {
-  const opts = normalize(options);
+  const isRaster = renderMode === 'dynamic' || renderMode === 'fallback_dynamic' || renderMode === 'image';
   // 'attribute' is treated as "custom + color by field" — both are "custom" from the user's perspective
   const isServer = mode === 'server';
   const isCustom = mode === 'custom' || mode === 'attribute';
-  const isAttribute = mode === 'attribute';
-  const disabled = isServer;
+  const isAttribute = !isRaster && mode === 'attribute';
   const kind = inferKind(geometryType);
+  const serverRenderer = React.useMemo(() => isRaster ? null : getRenderableArcgisRenderer(renderer), [isRaster, renderer]);
+  const hasServerRenderer = !!serverRenderer;
+  const serverOptions = React.useMemo(() => deriveOptionsFromRenderer(serverRenderer, kind), [serverRenderer, kind]);
+  const opts = normalize(isServer ? mergeServerOptions(serverOptions, options) : options);
+  const rendererLabel = React.useMemo(() => describeArcgisRenderer(serverRenderer), [serverRenderer]);
+  const currentStyleLabel = isRaster
+    ? (isServer ? 'Server imagery' : 'Custom raster')
+    : isServer
+      ? (hasServerRenderer ? 'Server style' : 'Preview default')
+      : isAttribute ? 'Custom by field' : 'Custom style';
   const [showAdvanced, setShowAdvanced] = React.useState(false);
   const opacityValue = Math.max(0, Math.min(1, Number.isFinite(layerOpacity) ? layerOpacity : 1));
   const labelFields = React.useMemo(() => {
@@ -60,8 +74,23 @@ export default function StyleTab({
     };
   }, []);
 
+  const commitCustomOptions = (next: GeometryStyleOptions) => {
+    if (isServer) onModeChange?.('custom');
+    onOptionsChange?.(next);
+  };
   const update = (partial: Partial<GeometryStyleOptions>) => {
-    onOptionsChange?.({ ...opts, ...partial });
+    commitCustomOptions({ ...opts, ...partial });
+  };
+  const updateDisplay = (display: GeometryStyleOptions['display']) => {
+    const current = normalize(options);
+    onOptionsChange?.({ ...current, display });
+  };
+  const updateRaster = (raster: GeometryStyleOptions['raster']) => {
+    update({ raster: { ...opts.raster, ...raster } });
+  };
+  const switchMode = (nextMode: StyleMode) => {
+    if (nextMode !== 'server' && isServer) onOptionsChange?.({ ...opts });
+    onModeChange?.(nextMode);
   };
   const updatePointSymbol = (symbol: 'circle' | 'icon') => {
     const point = { ...opts.point, symbol };
@@ -96,17 +125,20 @@ export default function StyleTab({
         </div>
       </div>
 
-      {kind ? (
+      {isRaster ? (
+        <div style={{ fontSize: 12, color: 'var(--muted)' }}>Layer: raster imagery</div>
+      ) : kind ? (
         <div style={{ fontSize: 12, color: 'var(--muted)' }}>Geometry: {kind === 'point' ? 'Point / MultiPoint' : kind === 'line' ? 'Line / MultiLine' : 'Polygon / MultiPolygon'}</div>
       ) : null}
 
       {/* Renderer: two choices only */}
       <div>
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>Renderer</div>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>{isRaster ? 'Raster style' : 'Renderer'}</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <input type="radio" name="style-mode" checked={isServer} onChange={() => onModeChange?.('server')} />
-            <span>Server style</span>
+            <span>{isRaster ? 'Server imagery' : 'Server style'}</span>
+            {!isRaster && !hasServerRenderer ? <span className="u-small u-muted">No renderer</span> : null}
           </label>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <input
@@ -115,17 +147,28 @@ export default function StyleTab({
               checked={isCustom}
               onChange={() => {
                 // Switching to custom: if already in attribute mode keep it, otherwise go custom
-                if (!isCustom) onModeChange?.('custom');
+                if (!isCustom) switchMode('custom');
               }}
             />
-            <span>Custom style</span>
+            <span>{isRaster ? 'Custom raster' : 'Custom style'}</span>
           </label>
+        </div>
+        <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: '90px 1fr', gap: '4px 8px', fontSize: 12 }}>
+          <span style={{ color: 'var(--muted)' }}>Current</span>
+          <span style={{ color: 'var(--text)' }}>{currentStyleLabel}</span>
+          {!isRaster ? (
+            <>
+              <span style={{ color: 'var(--muted)' }}>Renderer</span>
+              <span style={{ color: 'var(--text)' }}>{rendererLabel || 'Not provided'}</span>
+            </>
+          ) : null}
         </div>
       </div>
 
-      {/* Custom style section — geometry controls + color source */}
-      {isCustom && (
+      {/* Style controls — server mode shows the server-derived values until edited. */}
+      {(
         <>
+          {!isRaster ? (
           <fieldset>
             <legend style={{ fontWeight: 600 }}>Display</legend>
             <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
@@ -134,20 +177,106 @@ export default function StyleTab({
                 id="showLegend"
                 type="checkbox"
                 checked={opts.display.showLegend !== false}
-                onChange={(e) => update({ display: { ...opts.display, showLegend: e.target.checked } })}
+                onChange={(e) => updateDisplay({ ...normalize(options).display, showLegend: e.target.checked })}
               />
               <label htmlFor="hideSuspectedDuplicates">Hide suspected duplicates</label>
               <input
                 id="hideSuspectedDuplicates"
                 type="checkbox"
                 checked={!!opts.display.hideSuspectedDuplicates}
-                onChange={(e) => update({ display: { ...opts.display, hideSuspectedDuplicates: e.target.checked } })}
+                onChange={(e) => updateDisplay({ ...normalize(options).display, hideSuspectedDuplicates: e.target.checked })}
               />
             </div>
           </fieldset>
+          ) : null}
+
+          {isRaster ? (
+            <fieldset>
+              <legend style={{ fontWeight: 600 }}>Raster</legend>
+              <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
+                <RasterSlider
+                  id="rasterOpacity"
+                  label="Raster opacity"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={opts.raster.opacity ?? 1}
+                  onChange={(value) => updateRaster({ opacity: value })}
+                  formatValue={(value) => `${Math.round(value * 100)}%`}
+                />
+                <RasterSlider
+                  id="rasterBrightnessMin"
+                  label="Brightness min"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={opts.raster.brightnessMin ?? 0}
+                  onChange={(value) => updateRaster({ brightnessMin: Math.min(value, opts.raster.brightnessMax ?? 1) })}
+                />
+                <RasterSlider
+                  id="rasterBrightnessMax"
+                  label="Brightness max"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={opts.raster.brightnessMax ?? 1}
+                  onChange={(value) => updateRaster({ brightnessMax: Math.max(value, opts.raster.brightnessMin ?? 0) })}
+                />
+                <RasterSlider
+                  id="rasterContrast"
+                  label="Contrast"
+                  min={-1}
+                  max={1}
+                  step={0.05}
+                  value={opts.raster.contrast ?? 0}
+                  onChange={(value) => updateRaster({ contrast: value })}
+                  formatValue={formatSignedValue}
+                />
+                <RasterSlider
+                  id="rasterSaturation"
+                  label="Saturation"
+                  min={-1}
+                  max={1}
+                  step={0.05}
+                  value={opts.raster.saturation ?? 0}
+                  onChange={(value) => updateRaster({ saturation: value })}
+                  formatValue={formatSignedValue}
+                />
+                <RasterSlider
+                  id="rasterHueRotate"
+                  label="Hue rotate"
+                  min={-180}
+                  max={180}
+                  step={1}
+                  value={opts.raster.hueRotate ?? 0}
+                  onChange={(value) => updateRaster({ hueRotate: value })}
+                  formatValue={(value) => `${Math.round(value)} deg`}
+                />
+                <label htmlFor="rasterResampling">Resampling</label>
+                <select
+                  id="rasterResampling"
+                  value={opts.raster.resampling ?? 'linear'}
+                  onChange={(e) => updateRaster({ resampling: e.target.value === 'nearest' ? 'nearest' : 'linear' })}
+                >
+                  <option value="linear">Linear</option>
+                  <option value="nearest">Nearest</option>
+                </select>
+                <label htmlFor="rasterFadeDuration">Fade (ms)</label>
+                <input
+                  id="rasterFadeDuration"
+                  type="number"
+                  min={0}
+                  max={2000}
+                  step={50}
+                  value={opts.raster.fadeDuration ?? 300}
+                  onChange={(e) => updateRaster({ fadeDuration: toSteppedNumber(e.target.value, 300, 0, 2000, 50) })}
+                />
+              </div>
+            </fieldset>
+          ) : null}
 
           {/* Geometry controls — always shown in custom mode */}
-          {(kind === 'point' || !kind) && (
+          {!isRaster && (kind === 'point' || !kind) && (
             <fieldset>
               <legend style={{ fontWeight: 600 }}>Points</legend>
               <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
@@ -175,7 +304,7 @@ export default function StyleTab({
                       </>
                     )}
                     <label htmlFor="ptIconSize">Size (px)</label>
-                    <input id="ptIconSize" type="number" min={10} max={80} step={1} value={opts.point.iconSize} onChange={(e) => update({ point: { ...opts.point, iconSize: toNumber(e.target.value, 24) } })} />
+                    <input id="ptIconSize" type="number" min={4} max={80} step={0.5} value={opts.point.iconSize} onChange={(e) => update({ point: { ...opts.point, iconSize: toSizedNumber(e.target.value, 24, 4, 80) } })} />
                     <label htmlFor="ptIconOpacity">Opacity</label>
                     <input id="ptIconOpacity" type="range" min={0} max={1} step={0.05} value={opts.point.fillOpacity} onChange={(e) => update({ point: { ...opts.point, fillOpacity: toNumber(e.target.value, 1) } })} />
                     {showAdvanced && (
@@ -219,11 +348,11 @@ export default function StyleTab({
                     <label htmlFor="ptFillOpacity">Fill opacity</label>
                     <input id="ptFillOpacity" type="range" min={0} max={1} step={0.05} value={opts.point.fillOpacity} onChange={(e) => update({ point: { ...opts.point, fillOpacity: toNumber(e.target.value, 0.2) } })} />
                     <label htmlFor="ptRadius">Radius (px)</label>
-                    <input id="ptRadius" type="number" min={1} max={48} step={1} value={opts.point.radius} onChange={(e) => update({ point: { ...opts.point, radius: toNumber(e.target.value, 6) } })} />
+                    <input id="ptRadius" type="number" min={0.5} max={48} step={0.5} value={opts.point.radius} onChange={(e) => update({ point: { ...opts.point, radius: toSizedNumber(e.target.value, 6, 0.5, 48) } })} />
                     <label htmlFor="ptColor">Border color</label>
                     <input id="ptColor" type="color" value={opts.point.color} onChange={(e) => update({ point: { ...opts.point, color: e.target.value } })} />
                     <label htmlFor="ptWeight">Border width (px)</label>
-                    <input id="ptWeight" type="number" min={0} max={20} step={1} value={opts.point.weight} onChange={(e) => update({ point: { ...opts.point, weight: toNumber(e.target.value, 2) } })} />
+                    <input id="ptWeight" type="number" min={0} max={20} step={0.1} value={opts.point.weight} onChange={(e) => update({ point: { ...opts.point, weight: toStrokeWidth(e.target.value, 2) } })} />
                     <label htmlFor="ptOpacity">Border opacity</label>
                     <input id="ptOpacity" type="range" min={0} max={1} step={0.05} value={opts.point.opacity} onChange={(e) => update({ point: { ...opts.point, opacity: toNumber(e.target.value, 1) } })} />
                   </>
@@ -233,7 +362,7 @@ export default function StyleTab({
             </fieldset>
           )}
 
-          {(kind === 'line' || !kind) && (
+          {!isRaster && (kind === 'line' || !kind) && (
             <fieldset>
               <legend style={{ fontWeight: 600 }}>Lines</legend>
               <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
@@ -244,7 +373,7 @@ export default function StyleTab({
                   </>
                 )}
                 <label htmlFor="lnWeight">Weight (px)</label>
-                <input id="lnWeight" type="number" min={0} max={20} step={0.1} value={opts.line.weight} onChange={(e) => update({ line: { ...opts.line, weight: toNumber(e.target.value, 0.5) } })} />
+                <input id="lnWeight" type="number" min={0} max={20} step={0.1} value={opts.line.weight} onChange={(e) => update({ line: { ...opts.line, weight: toStrokeWidth(e.target.value, 0.5) } })} />
                 <label htmlFor="lnOpacity">Opacity</label>
                 <input id="lnOpacity" type="range" min={0} max={1} step={0.05} value={opts.line.opacity} onChange={(e) => update({ line: { ...opts.line, opacity: toNumber(e.target.value, 1) } })} />
                 {showAdvanced && (
@@ -272,14 +401,14 @@ export default function StyleTab({
             </fieldset>
           )}
 
-          {(kind === 'polygon' || !kind) && (
+          {!isRaster && (kind === 'polygon' || !kind) && (
             <fieldset>
               <legend style={{ fontWeight: 600 }}>Polygons</legend>
               <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
                 <label htmlFor="pgColor">Stroke color</label>
                 <input id="pgColor" type="color" value={opts.polygon.color} onChange={(e) => update({ polygon: { ...opts.polygon, color: e.target.value } })} />
                 <label htmlFor="pgWeight">Stroke weight (px)</label>
-                <input id="pgWeight" type="number" min={0} max={20} step={1} value={opts.polygon.weight} onChange={(e) => update({ polygon: { ...opts.polygon, weight: toNumber(e.target.value, 2) } })} />
+                <input id="pgWeight" type="number" min={0} max={20} step={0.1} value={opts.polygon.weight} onChange={(e) => update({ polygon: { ...opts.polygon, weight: toStrokeWidth(e.target.value, 2) } })} />
                 {!isAttribute && (
                   <>
                     <label htmlFor="pgFillColor">Fill color</label>
@@ -309,13 +438,14 @@ export default function StyleTab({
           )}
 
           {/* Color source — flat vs by field */}
+          {!isRaster ? (
           <div style={{ borderTop: '1px solid var(--border)', paddingTop: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
               <span style={{ fontWeight: 600, fontSize: 13 }}>Fill color source</span>
               <div style={{ display: 'flex', borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border)' }}>
                 <button
                   type="button"
-                  onClick={() => { onModeChange?.('custom'); }}
+                  onClick={() => { switchMode('custom'); }}
                   style={{
                     padding: '3px 10px',
                     fontSize: 12,
@@ -329,7 +459,7 @@ export default function StyleTab({
                 </button>
                 <button
                   type="button"
-                  onClick={() => { onModeChange?.('attribute'); }}
+                  onClick={() => { switchMode('attribute'); }}
                   style={{
                     padding: '3px 10px',
                     fontSize: 12,
@@ -363,7 +493,9 @@ export default function StyleTab({
               </p>
             )}
           </div>
+          ) : null}
 
+          {!isRaster ? (
           <fieldset>
             <legend style={{ fontWeight: 600 }}>Labels</legend>
             <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', alignItems: 'center', gap: 8 }}>
@@ -385,12 +517,12 @@ export default function StyleTab({
               <input
                 id="labelSize"
                 type="number"
-                min={8}
+                min={4}
                 max={32}
-                step={1}
+                step={0.5}
                 value={opts.label.size}
                 disabled={!opts.label.enabled}
-                onChange={(e) => update({ label: { ...opts.label, size: toNumber(e.target.value, 12) } })}
+                onChange={(e) => update({ label: { ...opts.label, size: toSizedNumber(e.target.value, 12, 4, 32) } })}
               />
               <label htmlFor="labelColor">Text color</label>
               <input
@@ -433,16 +565,17 @@ export default function StyleTab({
                     type="number"
                     min={0}
                     max={6}
-                    step={0.5}
+                    step={0.1}
                     value={opts.label.haloWidth}
                     disabled={!opts.label.enabled}
-                    onChange={(e) => update({ label: { ...opts.label, haloWidth: toNumber(e.target.value, 1.5) } })}
+                    onChange={(e) => update({ label: { ...opts.label, haloWidth: toSizedNumber(e.target.value, 1.5, 0, 6) } })}
                   />
                 </>
               )}
             </div>
             <AdvancedToggleFooter showAdvanced={showAdvanced} onToggle={() => setShowAdvanced(v => !v)} />
           </fieldset>
+          ) : null}
         </>
       )}
 
@@ -480,12 +613,14 @@ export default function StyleTab({
 function normalize(options: GeometryStyleOptions): Required<GeometryStyleOptions> & GeometryStyleOptions {
   const pointSymbol = options.point?.symbol === 'icon' ? 'icon' : 'circle';
   const defaultPointFillOpacity = pointSymbol === 'icon' ? 1 : defaultStyleOptions.point?.fillOpacity ?? 0.2;
+  const rasterBrightnessMin = roundToStep(clampNum(options.raster?.brightnessMin ?? defaultStyleOptions.raster?.brightnessMin ?? 0, 0, 1), 0.05);
+  const rasterBrightnessMax = roundToStep(clampNum(options.raster?.brightnessMax ?? defaultStyleOptions.raster?.brightnessMax ?? 1, 0, 1), 0.05);
 
   return {
     point: {
       symbol: pointSymbol,
       icon: POINT_ICON_OPTIONS.some((icon) => icon.id === options.point?.icon) ? options.point?.icon : DEFAULT_POINT_ICON_ID,
-      iconSize: clampNum(options.point?.iconSize ?? defaultStyleOptions.point?.iconSize ?? 24, 10, 80),
+      iconSize: roundToStep(clampNum(options.point?.iconSize ?? defaultStyleOptions.point?.iconSize ?? 24, 4, 80), 0.5),
       iconAnchor: POINT_ICON_ANCHOR_OPTIONS.includes(options.point?.iconAnchor as any) ? options.point?.iconAnchor : defaultStyleOptions.point?.iconAnchor ?? 'center',
       iconAllowOverlap: options.point?.iconAllowOverlap ?? defaultStyleOptions.point?.iconAllowOverlap ?? false,
       iconIgnorePlacement: !!options.point?.iconIgnorePlacement,
@@ -494,17 +629,17 @@ function normalize(options: GeometryStyleOptions): Required<GeometryStyleOptions
       iconPitchAlignment: POINT_ICON_ALIGNMENT_OPTIONS.includes(options.point?.iconPitchAlignment as any) ? options.point?.iconPitchAlignment : defaultStyleOptions.point?.iconPitchAlignment ?? 'auto',
       stroke: options.point?.stroke !== false,
       color: options.point?.color ?? '#3388ff',
-      weight: clampNum(options.point?.weight ?? 2, 0, 50),
+      weight: clampStrokeWidth(options.point?.weight ?? 2, 50),
       opacity: clamp01(options.point?.opacity ?? 1),
       fill: options.point?.fill !== false,
       fillColor: options.point?.fillColor ?? options.point?.color ?? '#3388ff',
       fillOpacity: clamp01(options.point?.fillOpacity ?? defaultPointFillOpacity),
-      radius: clampNum(options.point?.radius ?? 6, 1, 100),
+      radius: roundToStep(clampNum(options.point?.radius ?? 6, 0.5, 100), 0.5),
     },
     line: {
       stroke: options.line?.stroke !== false,
       color: options.line?.color ?? '#3388ff',
-      weight: clampNum(options.line?.weight ?? 0.5, 0, 50),
+      weight: clampStrokeWidth(options.line?.weight ?? 0.5, 50),
       opacity: clamp01(options.line?.opacity ?? 1),
       lineCap: (options.line?.lineCap as any) || 'round',
       lineJoin: (options.line?.lineJoin as any) || 'round',
@@ -514,7 +649,7 @@ function normalize(options: GeometryStyleOptions): Required<GeometryStyleOptions
     polygon: {
       stroke: options.polygon?.stroke !== false,
       color: options.polygon?.color ?? '#3388ff',
-      weight: clampNum(options.polygon?.weight ?? 2, 0, 50),
+      weight: clampStrokeWidth(options.polygon?.weight ?? 2, 50),
       opacity: clamp01(options.polygon?.opacity ?? 1),
       lineCap: (options.polygon?.lineCap as any) || 'round',
       lineJoin: (options.polygon?.lineJoin as any) || 'round',
@@ -530,13 +665,23 @@ function normalize(options: GeometryStyleOptions): Required<GeometryStyleOptions
       field: options.label?.field ?? '',
       position: (options.label?.position as any) || defaultStyleOptions.label?.position || 'top',
       color: options.label?.color ?? defaultStyleOptions.label?.color ?? '#111827',
-      size: clampNum(options.label?.size ?? defaultStyleOptions.label?.size ?? 12, 8, 32),
+      size: roundToStep(clampNum(options.label?.size ?? defaultStyleOptions.label?.size ?? 12, 4, 32), 0.5),
       haloColor: options.label?.haloColor ?? defaultStyleOptions.label?.haloColor ?? '#ffffff',
-      haloWidth: clampNum(options.label?.haloWidth ?? defaultStyleOptions.label?.haloWidth ?? 1.5, 0, 6),
+      haloWidth: roundToStep(clampNum(options.label?.haloWidth ?? defaultStyleOptions.label?.haloWidth ?? 1.5, 0, 6), 0.1),
     },
     display: {
       hideSuspectedDuplicates: !!options.display?.hideSuspectedDuplicates,
       showLegend: options.display?.showLegend !== false,
+    },
+    raster: {
+      opacity: roundToStep(clamp01(options.raster?.opacity ?? defaultStyleOptions.raster?.opacity ?? 1), 0.05),
+      brightnessMin: Math.min(rasterBrightnessMin, rasterBrightnessMax),
+      brightnessMax: Math.max(rasterBrightnessMin, rasterBrightnessMax),
+      contrast: roundToStep(clampNum(options.raster?.contrast ?? defaultStyleOptions.raster?.contrast ?? 0, -1, 1), 0.05),
+      saturation: roundToStep(clampNum(options.raster?.saturation ?? defaultStyleOptions.raster?.saturation ?? 0, -1, 1), 0.05),
+      hueRotate: roundToStep(clampNum(options.raster?.hueRotate ?? defaultStyleOptions.raster?.hueRotate ?? 0, -180, 180), 1),
+      resampling: options.raster?.resampling === 'nearest' ? 'nearest' : 'linear',
+      fadeDuration: roundToStep(clampNum(options.raster?.fadeDuration ?? defaultStyleOptions.raster?.fadeDuration ?? 300, 0, 2000), 50),
     },
   } as any;
 }
@@ -550,11 +695,219 @@ function inferKind(geometryType?: string | null): 'point' | 'line' | 'polygon' |
   return null;
 }
 
+function mergeServerOptions(serverOptions: GeometryStyleOptions, currentOptions: GeometryStyleOptions): GeometryStyleOptions {
+  const current = normalize(currentOptions);
+  return {
+    ...serverOptions,
+    display: current.display,
+  };
+}
+
+function cloneDefaultOptions(): Required<GeometryStyleOptions> & GeometryStyleOptions {
+  return normalize({ ...defaultStyleOptions });
+}
+
+function deriveOptionsFromRenderer(renderer: any, kind: 'point' | 'line' | 'polygon' | null): GeometryStyleOptions {
+  const out = cloneDefaultOptions();
+  const symbol = pickArcgisRendererSymbol(renderer);
+  if (!symbol) return out;
+  const symbolType = String(symbol.type || '').toLowerCase();
+  const resolvedKind = kind || (symbolType.includes('marker') || symbolType.includes('pms') || symbolType.includes('sms')
+    ? 'point'
+    : symbolType.includes('line') || symbolType.includes('sls')
+      ? 'line'
+      : symbolType.includes('fill') || symbolType.includes('sfs')
+        ? 'polygon'
+        : null);
+
+  if (resolvedKind === 'point') {
+    const fill = esriColorParts(symbol.color, out.point.fillColor, out.point.fillOpacity);
+    const outline = esriColorParts(symbol.outline?.color, out.point.color, out.point.opacity);
+    const isPicture = !!(symbol.url || symbol.imageData || symbolType.includes('pms') || symbolType.includes('picture'));
+    out.point = {
+      ...out.point,
+      symbol: isPicture ? 'icon' : 'circle',
+      iconSize: toSizedValue(symbol.size ?? symbol.width ?? symbol.height ?? out.point.iconSize, 4, 80),
+      radius: toSizedValue(symbol.size ?? out.point.radius, 0.5, 100),
+      fillColor: fill.hex,
+      fillOpacity: fill.opacity,
+      color: outline.hex,
+      opacity: outline.opacity,
+      weight: clampStrokeWidth(symbol.outline?.width ?? out.point.weight, 50),
+      iconAllowOverlap: true,
+      iconRotate: clampNum(symbol.angle ?? out.point.iconRotate, -360, 360),
+    };
+    return out;
+  }
+
+  if (resolvedKind === 'line') {
+    const line = esriColorParts(symbol.color, out.line.color, out.line.opacity);
+    out.line = {
+      ...out.line,
+      color: line.hex,
+      opacity: line.opacity,
+      weight: clampStrokeWidth(scaleRendererLineWidth(symbol.width ?? out.line.weight), 50),
+      lineCap: normalizeCap(symbol.cap) ?? out.line.lineCap,
+      lineJoin: normalizeJoin(symbol.join) ?? out.line.lineJoin,
+      dashArray: dashArrayText(symbol.style) ?? out.line.dashArray,
+    };
+    return out;
+  }
+
+  if (resolvedKind === 'polygon') {
+    const fill = esriColorParts(symbol.color, out.polygon.fillColor, out.polygon.fillOpacity);
+    const outline = esriColorParts(symbol.outline?.color, out.polygon.color, out.polygon.opacity);
+    out.polygon = {
+      ...out.polygon,
+      fillColor: fill.hex,
+      fillOpacity: fill.opacity,
+      color: outline.hex,
+      opacity: outline.opacity,
+      weight: clampStrokeWidth(scaleRendererLineWidth(symbol.outline?.width ?? out.polygon.weight), 50),
+      lineCap: normalizeCap(symbol.cap) ?? out.polygon.lineCap,
+      lineJoin: normalizeJoin(symbol.join) ?? out.polygon.lineJoin,
+      dashArray: dashArrayText(symbol.outline?.style || symbol.style) ?? out.polygon.dashArray,
+    };
+  }
+  return out;
+}
+
+function esriColorParts(color: unknown, fallbackHex: string | undefined, fallbackOpacity: number | undefined): { hex: string; opacity: number } {
+  if (!Array.isArray(color) || color.length < 3) {
+    return { hex: fallbackHex || '#3388ff', opacity: clamp01(fallbackOpacity ?? 1) };
+  }
+  const [r, g, b, a = 255] = color.map((value) => Number(value));
+  const hex = `#${[r, g, b].map((value) => clampNum(Math.round(value), 0, 255).toString(16).padStart(2, '0')).join('')}`;
+  return { hex, opacity: clamp01(a / 255) };
+}
+
+function scaleRendererLineWidth(width: unknown): number {
+  const n = Number(width);
+  if (!Number.isFinite(n)) return 1;
+  return n > 0 && n < 1 ? n * 4 : n;
+}
+
+function dashArrayText(style?: string): string | undefined {
+  if (!style) return undefined;
+  const key = style.toLowerCase();
+  const dash = (() => {
+    switch (key) {
+      case 'esrislsdash':
+      case 'dash':
+        return [4, 2];
+      case 'esrislsdot':
+      case 'dot':
+        return [1, 2];
+      case 'esrislsdashdot':
+      case 'dashdot':
+        return [4, 2, 1, 2];
+      case 'esrislsdashdotdot':
+      case 'dashdotdot':
+        return [4, 2, 1, 2, 1, 2];
+      case 'esrislsnull':
+      case 'none':
+        return [];
+      default:
+        return undefined;
+    }
+  })();
+  return dash ? dash.join(',') : undefined;
+}
+
+function normalizeCap(cap?: string): 'butt' | 'round' | 'square' | undefined {
+  if (!cap) return undefined;
+  const lc = cap.toLowerCase();
+  if (lc.includes('round')) return 'round';
+  if (lc.includes('square')) return 'square';
+  if (lc.includes('butt')) return 'butt';
+  return undefined;
+}
+
+function normalizeJoin(join?: string): 'bevel' | 'round' | 'miter' | undefined {
+  if (!join) return undefined;
+  const lc = join.toLowerCase();
+  if (lc.includes('round')) return 'round';
+  if (lc.includes('bevel')) return 'bevel';
+  if (lc.includes('miter')) return 'miter';
+  return undefined;
+}
+
 function clamp01(n: number): number { if (!Number.isFinite(n)) return 0; return Math.max(0, Math.min(1, n)); }
 function clampNum(n: number, min: number, max: number): number { if (!Number.isFinite(n)) return min; return Math.max(min, Math.min(max, n)); }
 function toNumber(v: string, d: number): number { const n = Number(v); return Number.isFinite(n) ? n : d; }
+function roundToStep(n: number, step: number): number {
+  if (!Number.isFinite(n) || !Number.isFinite(step) || step <= 0) return n;
+  const decimals = Math.max(0, String(step).split('.')[1]?.length || 0);
+  return Number((Math.round(n / step) * step).toFixed(decimals));
+}
+function clampStrokeWidth(n: number, max: number): number {
+  if (!Number.isFinite(n)) return 0;
+  const clamped = clampNum(n, 0, max);
+  if (clamped === 0) return 0;
+  return Math.max(0.1, roundToStep(clamped, 0.1));
+}
+function toStrokeWidth(v: string, d: number): number {
+  const n = Number(v);
+  return clampStrokeWidth(Number.isFinite(n) ? n : d, 20);
+}
+function toSteppedNumber(v: string, d: number, min: number, max: number, step: number): number {
+  const n = Number(v);
+  return roundToStep(clampNum(Number.isFinite(n) ? n : d, min, max), step);
+}
+function toSizedValue(value: unknown, min: number, max: number): number {
+  const n = Number(value);
+  return roundToStep(clampNum(Number.isFinite(n) ? n : min, min, max), 0.5);
+}
+function toSizedNumber(v: string, d: number, min: number, max: number): number {
+  const n = Number(v);
+  return toSizedValue(Number.isFinite(n) ? n : d, min, max);
+}
 function formatOptionLabel(value: string): string {
   return value.split('-').map((part) => part ? part[0].toUpperCase() + part.slice(1) : part).join(' ');
+}
+function formatSignedValue(value: number): string {
+  if (!Number.isFinite(value) || value === 0) return '0';
+  return `${value > 0 ? '+' : ''}${Number(value.toFixed(2))}`;
+}
+
+function RasterSlider({
+  id,
+  label,
+  min,
+  max,
+  step,
+  value,
+  onChange,
+  formatValue = (next: number) => String(Number(next.toFixed(2))),
+}: {
+  id: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onChange: (value: number) => void;
+  formatValue?: (value: number) => string;
+}) {
+  const current = toSteppedNumber(String(value), min, min, max, step);
+  return (
+    <>
+      <label htmlFor={id}>{label}</label>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        <input
+          id={id}
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={current}
+          onChange={(e) => onChange(toSteppedNumber(e.target.value, current, min, max, step))}
+          style={{ flex: 1, minWidth: 0 }}
+        />
+        <span className="u-muted u-small" style={{ minWidth: 52, textAlign: 'right' }}>{formatValue(current)}</span>
+      </div>
+    </>
+  );
 }
 
 function AdvancedToggleFooter({ showAdvanced, onToggle }: { showAdvanced: boolean; onToggle: () => void }) {

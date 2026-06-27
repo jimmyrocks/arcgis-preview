@@ -8,6 +8,7 @@ import ExtentMiniMap from '../../ui/ExtentMiniMap';
 import TimeBadge from '../../ui/TimeBadge';
 import { computeLastEditDateString, timeExtentToBadge } from '../../../lib/arcgis-meta';
 import { getLayerDescription, getServiceDescription, htmlToPlainText, summarizePlainText, type MetadataDescription } from '../../../lib/arcgisDescription';
+import { describeArcgisRenderer } from '../../../lib/arcgisRenderer';
 
 type Props = {
   serviceMeta: MapServiceInfo | null;
@@ -70,6 +71,7 @@ function LayerDetailsSection({ layerMeta, serviceMeta, onZoomToExtent, featureCo
   const [displayExtent, setDisplayExtent] = React.useState<Extent | undefined>(undefined);
   const [downloaded, setDownloaded] = React.useState<Extent | null>(null);
   const description = React.useMemo(() => getLayerDescription(layerMeta, serviceMeta), [layerMeta, serviceMeta]);
+  const rendererDescription = React.useMemo(() => describeArcgisRenderer((layerMeta as any)?.drawingInfo?.renderer), [layerMeta]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -218,8 +220,8 @@ function LayerDetailsSection({ layerMeta, serviceMeta, onZoomToExtent, featureCo
           {typeof (layerMeta as any)?.minScale === 'number' || typeof (layerMeta as any)?.maxScale === 'number' ? (
             <LabelValue label="Scale Range">{formatScaleRange((layerMeta as any)?.minScale, (layerMeta as any)?.maxScale)}</LabelValue>
           ) : null}
-          {((layerMeta as any)?.drawingInfo?.renderer?.type) ? (
-            <LabelValue label="Renderer">{String((layerMeta as any).drawingInfo.renderer.type)}</LabelValue>
+          {rendererDescription ? (
+            <LabelValue label="Renderer">{rendererDescription}</LabelValue>
           ) : null}
           {typeof (layerMeta as any)?.maxRecordCount === 'number' ? (
             <LabelValue label="Max Records">{(layerMeta as any).maxRecordCount}</LabelValue>

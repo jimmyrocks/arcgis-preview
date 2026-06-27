@@ -155,6 +155,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
   const [zoomBusy, setZoomBusy] = useState<boolean>(false);
   const [copiedKey, setCopiedKey] = useState<string>('');
   const [recentEntries, setRecentEntries] = useState<RecentLayerEntry[]>([]);
+  const [recentPanelOpen, setRecentPanelOpen] = useState<boolean>(false);
   const [pinnedRoots, setPinnedRoots] = useState<string[]>([]);
   const [layersByServiceUrl, setLayersByServiceUrl] = useState<Record<string, LayerRef[]>>({});
   const [folderChildrenByPath, setFolderChildrenByPath] = useState<Record<string, string[]>>({});
@@ -210,6 +211,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
   const browseServerInFinder = useCallback(() => {
     if (!showFinder) return;
     setFinderInput('');
+    setRecentPanelOpen(false);
     setBrowsePath('');
     setSelectedService('');
     setSelectedLayerId('');
@@ -219,6 +221,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
   const browseFolderInFinder = useCallback((path: string) => {
     if (!showFinder) return;
     setFinderInput('');
+    setRecentPanelOpen(false);
     setBrowsePath(path);
     setSelectedService('');
     setSelectedLayerId('');
@@ -229,6 +232,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
     if (!showFinder) return;
     const service = services.find((item) => `${item.path}/${item.type}` === serviceKey) || null;
     setFinderInput('');
+    setRecentPanelOpen(false);
     setSelectedService(serviceKey);
     setSelectedLayerId('');
     if (service) setBrowsePath(service.folderPath);
@@ -247,6 +251,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
   useEffect(() => {
     setRoot(parsed?.baseRoot || '');
     setBrowsePath(parsed?.folders.join('/') || '');
+    setRecentPanelOpen(false);
     if (parsed?.servicePath && parsed?.serviceType) {
       setSelectedService(`${parsed.servicePath}/${parsed.serviceType}`);
     } else {
@@ -269,6 +274,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
       setRoot((prev) => (prev === nextRoot ? prev : nextRoot));
       setBrowsePath(info.folders.join('/'));
       setFinderInput('');
+      setRecentPanelOpen(false);
       if (info.servicePath && info.serviceType) {
         const nextService = `${info.servicePath}/${info.serviceType}`;
         setSelectedService(nextService);
@@ -296,6 +302,11 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
       return false;
     }
   }, [onSelectServiceUrl]);
+
+  const openQuickUrl = useCallback((url: string) => {
+    const applied = applyRootUrl(url, true);
+    if (applied) setRecentPanelOpen(false);
+  }, [applyRootUrl]);
 
   useEffect(() => {
     if (!root || !canRenderDiscoveryState || hydratedRoot !== root) return;
@@ -621,6 +632,14 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
     if (browsePath) return `folder:${browsePath}`;
     return '';
   }, [browsePath, selectedLayerId, selectedService]);
+  const recentItems = useMemo(() => recentEntries.map((entry) => ({
+    label: entry.layerName,
+    description: [friendlyServiceLabel(entry.serviceType), serviceDataBadge(entry.serviceType), shortUrl(entry.serverRoot)]
+      .filter(Boolean)
+      .join(' • '),
+    url: entry.layerUrl,
+    group: shortUrl(entry.serverRoot),
+  })), [recentEntries]);
 
   const finderItems = useMemo(() => {
     if (!showFinder) return [] as FinderItem[];
@@ -714,7 +733,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
     const layerGroupLabel = selectedServiceInfo?.name ? `Layers in ${selectedServiceInfo.name}` : 'Layers in current service';
     const query = finderInput.trim();
     const urlCandidate = coerceArcgisRestServicesUrl(query);
-    const mapped = finderItems.map((item) => ({
+    const mapped: SearchableSelectOption[] = finderItems.map((item) => ({
       value: item.kind === 'folder'
         ? `folder:${item.path}`
         : item.kind === 'service'
@@ -846,6 +865,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
 
   const navigateUpOneLevel = useCallback(() => {
     if (selectedService && selectedLayerId !== '' && selectedType === 'MapServer') {
+      setRecentPanelOpen(false);
       setSelectedLayerId('');
       return true;
     }
@@ -854,11 +874,13 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
       setSelectedService('');
       setSelectedLayerId('');
       setFinderInput('');
+      setRecentPanelOpen(false);
       if (service) setBrowsePath(service.folderPath);
       return true;
     }
     if (browsePath) {
       setFinderInput('');
+      setRecentPanelOpen(false);
       setBrowsePath(parentPathOf(browsePath));
       return true;
     }
@@ -866,6 +888,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
   }, [browsePath, selectedLayerId, selectedService, selectedType, services]);
 
   const handleFinderPick = useCallback((value: string) => {
+    setRecentPanelOpen(false);
     if (value === 'up:') {
       navigateUpOneLevel();
       focusFinderDropdown(false);
@@ -917,9 +940,17 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
     const trimmed = value.trim();
     if (!trimmed || !looksLikeArcgisRestUrl(trimmed)) return false;
     const applied = applyRootUrl(trimmed, true);
-    if (applied) setFinderInput('');
+    if (applied) {
+      setFinderInput('');
+      setRecentPanelOpen(false);
+    }
     return applied;
   }, [applyRootUrl]);
+
+  const handleFinderInputChange = useCallback((value: string) => {
+    setFinderInput(value);
+    if (value.trim()) setRecentPanelOpen(false);
+  }, []);
 
   const handleFinderKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Backspace' && !finderInput.trim()) {
@@ -940,6 +971,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
         active: !browsePath && !selectedService,
         onClick: root ? () => {
           setFinderInput('');
+          setRecentPanelOpen(false);
           setBrowsePath('');
           setSelectedService('');
           setSelectedLayerId('');
@@ -957,6 +989,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
         active: target === browsePath && !selectedService,
         onClick: () => {
           setFinderInput('');
+          setRecentPanelOpen(false);
           setBrowsePath(target);
           setSelectedService('');
           setSelectedLayerId('');
@@ -972,6 +1005,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
         onClick: selectedServiceInfo.type === 'MapServer'
           ? () => {
               setFinderInput('');
+              setRecentPanelOpen(false);
               setSelectedLayerId('');
             }
           : undefined,
@@ -1056,15 +1090,6 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
   const crawlModeHint = crawlMode === 'lazy'
     ? 'Large or slow server detected. Loading folders on demand.'
     : 'Server is being crawled eagerly for faster global browse.';
-  const recentItems = useMemo(() => recentEntries.map((entry) => ({
-    label: entry.layerName,
-    description: [friendlyServiceLabel(entry.serviceType), serviceDataBadge(entry.serviceType), shortUrl(entry.serverRoot)]
-      .filter(Boolean)
-      .join(' • '),
-    url: entry.layerUrl,
-    group: shortUrl(entry.serverRoot),
-  })), [recentEntries]);
-
   const finderScopeModel = useMemo(() => {
     if (!root) return null;
     const hasQuery = !!finderInput.trim();
@@ -1143,9 +1168,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
           examples={EXAMPLE_URLS.map((item) => ({ label: item.label, description: item.description, url: item.url }))}
           pinned={pinnedRoots.map((url) => ({ label: shortUrl(url), description: url, url }))}
           recent={recentItems}
-          onOpen={(url) => {
-            applyRootUrl(url, true);
-          }}
+          onOpen={openQuickUrl}
         />
       );
     }
@@ -1193,7 +1216,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
     if (browsePath && !hasVisibleBrowseItems) return 'No folders or services in this folder.';
     if (selectedService && !layers.length && (selectedType === 'MapServer' || selectedType === 'FeatureServer') && layersLoading) return 'Loading layers…';
     return 'Choose a folder, service, or layer.';
-  }, [applyRootUrl, browsePath, currentFolderLoadState?.status, directBrowseFolders.length, directServices.length, finderInput, layers.length, layersLoading, loadError, loadErrorKind, loading, pinnedRoots, recentItems, retryDiscovery, root, selectedService, selectedType, services.length, showFinder]);
+  }, [browsePath, currentFolderLoadState?.status, directBrowseFolders.length, directServices.length, finderInput, layers.length, layersLoading, loadError, loadErrorKind, loading, openQuickUrl, pinnedRoots, recentItems, retryDiscovery, root, selectedService, selectedType, services.length, showFinder]);
 
   const previewModel = useMemo(() => {
     if (!previewItem) return null;
@@ -1281,6 +1304,27 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
                     </button>
                   </React.Fragment>
                 ))}
+                {recentItems.length ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFinderInput('');
+                      setRecentPanelOpen((open) => !open);
+                    }}
+                    aria-expanded={recentPanelOpen}
+                    aria-controls="compact-recent-layers"
+                    style={{
+                      ...compactFinderCrumbStyle,
+                      background: recentPanelOpen ? 'var(--accent-row)' : 'var(--panel-subtle)',
+                      color: 'var(--accent)',
+                      cursor: 'pointer',
+                      marginLeft: 2,
+                    }}
+                    title="Show recent layers"
+                  >
+                    Recents
+                  </button>
+                ) : null}
               </div>
               {compactContextUrl ? (
                 <div
@@ -1291,6 +1335,13 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
                 </div>
               ) : null}
             </div>
+          ) : null}
+          {isCompactFinder && recentPanelOpen && recentItems.length ? (
+            <RecentLayersPanel
+              id="compact-recent-layers"
+              recent={recentItems}
+              onOpen={openQuickUrl}
+            />
           ) : null}
           {!isCompactFinder ? (
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
@@ -1348,7 +1399,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
             options={finderOptions}
             value={currentSelectionValue}
             onChange={handleFinderPick}
-            onInputChange={setFinderInput}
+            onInputChange={handleFinderInputChange}
             inputValue={finderInput}
             placeholder={isCompactFinder
               ? (root ? 'Jump to another folder, service, or layer…' : 'Paste ArcGIS URL or find a layer…')
@@ -1776,6 +1827,48 @@ function QuickSection({
       ) : (
         <div className="u-small u-muted">{emptyLabel || 'Nothing here yet.'}</div>
       )}
+    </div>
+  );
+}
+
+function RecentLayersPanel({
+  id,
+  recent,
+  onOpen,
+}: {
+  id: string;
+  recent: Array<{ label: string; description: string; url: string; group?: string }>;
+  onOpen: (url: string) => void;
+}) {
+  return (
+    <div
+      id={id}
+      style={{ ...sectionCardStyle, display: 'grid', gap: 10, padding: 10 }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>Recent layers</div>
+        <div className="u-small u-muted">{recent.length} saved</div>
+      </div>
+      <div style={{ display: 'grid', gap: 10 }}>
+        {groupRecentItems(recent).map((group) => (
+          <div key={group.name} style={{ display: 'grid', gap: 6 }}>
+            <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{group.name}</div>
+            <div style={{ display: 'grid', gap: 6 }}>
+              {group.items.map((item) => (
+                <button
+                  key={`recent-panel:${item.url}`}
+                  type="button"
+                  onClick={() => onOpen(item.url)}
+                  style={compactLinkStyle}
+                >
+                  <span style={{ fontWeight: 600 }}>{item.label}</span>
+                  <span style={{ display: 'block', marginTop: 2, color: 'var(--muted)', fontSize: 12 }}>{item.description}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

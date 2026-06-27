@@ -120,6 +120,12 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
     if (!activeTabName) return;
     setActiveTab(activeTabName);
   }, [activeTabName]);
+  const styleDisabledMessage = isGroupLayer
+    ? 'Style is not available for Group Layers'
+    : 'Style is available for Feature Layers and raster imagery previews';
+  const styleDisabledTitle = isGroupLayer
+    ? 'Not available for Group Layers'
+    : 'Feature Layers and raster imagery previews only';
   const columnAliases = React.useMemo(() => {
     const map: Record<string, string> = {};
     const fields = layerMeta?.fields || [];
@@ -167,10 +173,10 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
         <TabButton name="details" active={activeTab === 'details'} onClick={() => { setActiveTab('details'); onTabChange?.('details'); }}>Details</TabButton>
         <TabButton name="style" active={activeTab === 'style'} disabled={disableStyle}
           onClick={() => {
-            if (disableStyle) { try { toast(isGroupLayer ? 'Style is not available for Group Layers' : 'Style is only available for Feature Layers'); } catch {} }
+            if (disableStyle) { try { toast(styleDisabledMessage); } catch {} }
             else { setActiveTab('style'); onTabChange?.('style'); }
           }}
-          title={disableStyle ? (isGroupLayer ? 'Not available for Group Layers' : 'Only for Feature Layers') : undefined}
+          title={disableStyle ? styleDisabledTitle : undefined}
         >Style</TabButton>
         <TabButton name="query" active={activeTab === 'query'} disabled={disableQuery}
           onClick={() => {
@@ -244,6 +250,8 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
             mode={styleMode}
             options={styleOptions}
             geometryType={layerMeta?.geometryType}
+            renderMode={renderMode}
+            renderer={(layerMeta as any)?.drawingInfo?.renderer}
             onModeChange={onStyleModeChange}
             onOptionsChange={onStyleOptionsChange}
             layerOpacity={layerOpacity}

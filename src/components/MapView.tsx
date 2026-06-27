@@ -14,7 +14,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { clearRendererArtifacts } from '@opendataland/source-arcgis';
 import { registerArcGISRestSource } from '@opendataland/source-arcgis';
 import type { Feature, FeatureCollection } from 'geojson';
-import type { GeometryStyleOptions, AttributeStyleOptions } from '../lib/styleOptions';
+import type { GeometryStyleOptions, AttributeStyleOptions, RasterStyleOptions } from '../lib/styleOptions';
 import type { Extent } from '../lib/types/arcgis-rest';
 import { extentToBounds, boundsToExtent4326, extentFromFeatures, boundsFromFeatures } from '../lib/geometry';
 import { resolveEsriLayer, fetchLayerMetadata, fetchServiceMetadata, summarizeService } from '../lib/esriLayer';
@@ -41,6 +41,7 @@ export type MapViewProps = {
   selectedMapLayerId?: number;
   where?: string;
   forcedFetchPaused?: boolean;
+  allFeaturesLoaded?: boolean;
   basemap?: BasemapKey;
   layerOpacity?: number;
   onBasemapChange?: (b: BasemapKey) => void;
@@ -69,6 +70,8 @@ export type MapViewProps = {
   attributeStyle?: AttributeStyleOptions;
   onRenderModeChange?: (mode: 'feature' | 'dynamic' | 'fallback_dynamic' | 'image' | 'vector', reason?: string) => void;
   onDownloadedExtentChange?: (e: Extent | null) => void;
+  onManualFetchIntent?: () => void;
+  onAutoFetchChange?: (enabled: boolean) => void;
 };
 
 const ARC_SOURCE_ID = 'arcgis-source';
@@ -94,6 +97,16 @@ const ARC_PAGE_SIZE_MIN = 1;
 const ARC_PAGE_SIZE_FALLBACK_MAX = 1000;
 const ARC_SNAPSHOT_DEBOUNCE_MS = 120;
 const RASTER_BASE_OPACITY = 0.85;
+const DEFAULT_RASTER_STYLE: Required<RasterStyleOptions> = {
+  opacity: 1,
+  brightnessMin: 0,
+  brightnessMax: 1,
+  contrast: 0,
+  saturation: 0,
+  hueRotate: 0,
+  resampling: 'linear',
+  fadeDuration: 300,
+};
 
 const MAP_BTN_STYLE: React.CSSProperties = {
   width: 32, height: 32,
@@ -227,6 +240,7 @@ function installArcgisSegmentLru(src: any, lru: Map<string, true>, maxEntries: n
   const recordQuality = typeof segments.recordQuality === 'function' ? segments.recordQuality.bind(segments) : null;
   if (!recordQuality) return;
   const clearCache = typeof segments.clearCache === 'function' ? segments.clearCache.bind(segments) : null;
+  const clearQualityCache = typeof segments.clearQualityCache === 'function' ? segments.clearQualityCache.bind(segments) : null;
 
   segments.__odlLruPatched = true;
   segments.recordQuality = (key: string, quality: any) => {
@@ -243,6 +257,12 @@ function installArcgisSegmentLru(src: any, lru: Map<string, true>, maxEntries: n
   if (clearCache) {
     segments.clearCache = () => {
       clearCache();
+      lru.clear();
+    };
+  }
+  if (clearQualityCache) {
+    segments.clearQualityCache = () => {
+      clearQualityCache();
       lru.clear();
     };
   }
@@ -291,6 +311,63 @@ function applyOpacityToLayer(map: MapLibreMap, layerId: string, opacity: number,
       map.setPaintProperty(layerId, prop, multiplyOpacity(base, opacity));
     } catch { /* ignore */ }
   });
+}
+
+function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+function normalizeRasterStyle(style?: RasterStyleOptions): Required<RasterStyleOptions> {
+  const brightnessMin = clampNumber(style?.brightnessMin, DEFAULT_RASTER_STYLE.brightnessMin, 0, 1);
+  const brightnessMax = clampNumber(style?.brightnessMax, DEFAULT_RASTER_STYLE.brightnessMax, 0, 1);
+  return {
+    opacity: clampNumber(style?.opacity, DEFAULT_RASTER_STYLE.opacity, 0, 1),
+    brightnessMin: Math.min(brightnessMin, brightnessMax),
+    brightnessMax: Math.max(brightnessMin, brightnessMax),
+    contrast: clampNumber(style?.contrast, DEFAULT_RASTER_STYLE.contrast, -1, 1),
+    saturation: clampNumber(style?.saturation, DEFAULT_RASTER_STYLE.saturation, -1, 1),
+    hueRotate: clampNumber(style?.hueRotate, DEFAULT_RASTER_STYLE.hueRotate, -180, 180),
+    resampling: style?.resampling === 'nearest' ? 'nearest' : 'linear',
+    fadeDuration: clampNumber(style?.fadeDuration, DEFAULT_RASTER_STYLE.fadeDuration, 0, 2000),
+  };
+}
+
+function rasterOpacityBase(style?: RasterStyleOptions): number {
+  return RASTER_BASE_OPACITY * normalizeRasterStyle(style).opacity;
+}
+
+function rasterPaintProperties(style?: RasterStyleOptions): Record<string, any> {
+  const raster = normalizeRasterStyle(style);
+  return {
+    'raster-brightness-min': raster.brightnessMin,
+    'raster-brightness-max': raster.brightnessMax,
+    'raster-contrast': raster.contrast,
+    'raster-saturation': raster.saturation,
+    'raster-hue-rotate': raster.hueRotate,
+    'raster-resampling': raster.resampling,
+    'raster-fade-duration': raster.fadeDuration,
+  };
+}
+
+function applyRasterStyleToLayer(
+  map: MapLibreMap,
+  layerId: string,
+  style: GeometryStyleOptions | undefined,
+  opacity: number,
+  baseMap: Map<string, Record<string, any>>
+) {
+  const layer: any = map.getLayer(layerId) as any;
+  if (!layer || layer.type !== 'raster') return;
+  const paint = rasterPaintProperties(style?.raster);
+  for (const [prop, value] of Object.entries(paint)) {
+    try { map.setPaintProperty(layerId, prop, value); } catch {}
+  }
+  const entry = baseMap.get(layerId) || {};
+  entry['raster-opacity'] = rasterOpacityBase(style?.raster);
+  baseMap.set(layerId, entry);
+  applyOpacityToLayer(map, layerId, opacity, baseMap);
 }
 
 function idFilter(id: string | number | null | undefined, idField?: string) {
@@ -699,6 +776,7 @@ export default function MapView({
   selectedMapLayerId,
   where = '1=1',
   forcedFetchPaused = false,
+  allFeaturesLoaded = false,
   basemap = 'carto_positron',
   layerOpacity = 1,
   onBasemapChange,
@@ -724,7 +802,9 @@ export default function MapView({
   customStyle = {},
   attributeStyle,
   onRenderModeChange,
-  onDownloadedExtentChange
+  onDownloadedExtentChange,
+  onManualFetchIntent,
+  onAutoFetchChange
 }: MapViewProps) {
   const { containerRef, mapRef, ready } = useMapReady(basemap, initialCenter, initialZoom);
   const [bearing, setBearing] = React.useState(0);
@@ -762,6 +842,8 @@ export default function MapView({
   const lastClearZoomRef = React.useRef<number>(0);
   const [fetchControlContainer, setFetchControlContainer] = React.useState<HTMLDivElement | null>(null);
   const fetchControlRef = React.useRef<maplibregl.IControl | null>(null);
+  const effectiveRasterStyle = styleMode === 'server' ? undefined : customStyle;
+  const rasterStyleKey = `${styleMode}:${JSON.stringify(effectiveRasterStyle?.raster || {})}`;
 
   React.useEffect(() => {
     isLoadingRef.current = isLoading;
@@ -775,7 +857,8 @@ export default function MapView({
     legendHighlightFilterRef.current = legendHighlightFilter ?? null;
   }, [legendHighlightFilter]);
 
-  const effectiveFetchPaused = fetchPaused || forcedFetchPaused;
+  const effectiveFetchPaused = fetchPaused || forcedFetchPaused || allFeaturesLoaded;
+  const displayedAutoFetch = !fetchPaused && !forcedFetchPaused;
   const hideSuspectedDuplicates = !!customStyle?.display?.hideSuspectedDuplicates;
 
   React.useEffect(() => {
@@ -785,6 +868,10 @@ export default function MapView({
   React.useEffect(() => {
     fetchPausedRef.current = effectiveFetchPaused;
   }, [effectiveFetchPaused]);
+
+  React.useEffect(() => {
+    onAutoFetchChange?.(!fetchPaused);
+  }, [fetchPaused, onAutoFetchChange]);
 
   const applyFetchPause = React.useCallback((paused: boolean, refreshOnResume: boolean = false) => {
     if (!ready || !mapRef.current) return;
@@ -823,10 +910,14 @@ export default function MapView({
         layer.id.startsWith(CUSTOM_PREFIX) ||
         layer.id.startsWith(VECTOR_LAYER_PREFIX)
       ) {
-        applyOpacityToLayer(map, layer.id, opacity, opacityBaseRef.current);
+        if (layer.id === DYNAMIC_LAYER_ID) {
+          applyRasterStyleToLayer(map, layer.id, effectiveRasterStyle, opacity, opacityBaseRef.current);
+        } else {
+          applyOpacityToLayer(map, layer.id, opacity, opacityBaseRef.current);
+        }
       }
     });
-  }, [layerOpacity, ready]);
+  }, [layerOpacity, ready, rasterStyleKey]);
 
   React.useEffect(() => {
     if (!ready || !mapRef.current) return;
@@ -884,8 +975,8 @@ export default function MapView({
           lastClearZoomRef.current = currentZoom;
           const src: any = map.getSource(ARC_SOURCE_ID);
           if (src?.arcgisType === 'arcgis-rest') {
-            try { src._segments?.clearCache?.(); } catch {}
-            try { src.refresh?.(); } catch {}
+            try { (src._segments?.clearQualityCache || src._segments?.clearCache)?.call(src._segments); } catch {}
+            try { src.refresh?.({ preserveCompleteCoverage: true }); } catch {}
           }
         } else {
           lastClearZoomRef.current = currentZoom;
@@ -1051,9 +1142,9 @@ export default function MapView({
               id: DYNAMIC_LAYER_ID,
               type: 'raster',
               source: DYNAMIC_SOURCE_ID,
-              paint: { 'raster-opacity': RASTER_BASE_OPACITY }
+              paint: { ...rasterPaintProperties(effectiveRasterStyle?.raster), 'raster-opacity': rasterOpacityBase(effectiveRasterStyle?.raster) }
             });
-            applyOpacityToLayer(map, DYNAMIC_LAYER_ID, layerOpacity, opacityBaseRef.current);
+            applyRasterStyleToLayer(map, DYNAMIC_LAYER_ID, effectiveRasterStyle, layerOpacity, opacityBaseRef.current);
             onStatusChange?.('loaded');
             setIsLoading(false);
             onFeatureCollection?.({ type: 'FeatureCollection', features: [] });
@@ -1102,9 +1193,9 @@ export default function MapView({
               id: DYNAMIC_LAYER_ID,
               type: 'raster',
               source: DYNAMIC_SOURCE_ID,
-              paint: { 'raster-opacity': RASTER_BASE_OPACITY }
+              paint: { ...rasterPaintProperties(effectiveRasterStyle?.raster), 'raster-opacity': rasterOpacityBase(effectiveRasterStyle?.raster) }
             });
-            applyOpacityToLayer(map, DYNAMIC_LAYER_ID, layerOpacity, opacityBaseRef.current);
+            applyRasterStyleToLayer(map, DYNAMIC_LAYER_ID, effectiveRasterStyle, layerOpacity, opacityBaseRef.current);
             onStatusChange?.('loaded');
             setIsLoading(false);
             onFeatureCollection?.({ type: 'FeatureCollection', features: [] });
@@ -1392,9 +1483,9 @@ export default function MapView({
               id: DYNAMIC_LAYER_ID,
               type: 'raster',
               source: DYNAMIC_SOURCE_ID,
-              paint: { 'raster-opacity': RASTER_BASE_OPACITY }
+              paint: { ...rasterPaintProperties(effectiveRasterStyle?.raster), 'raster-opacity': rasterOpacityBase(effectiveRasterStyle?.raster) }
             });
-            applyOpacityToLayer(map, DYNAMIC_LAYER_ID, layerOpacity, opacityBaseRef.current);
+            applyRasterStyleToLayer(map, DYNAMIC_LAYER_ID, effectiveRasterStyle, layerOpacity, opacityBaseRef.current);
           } catch {}
 
           onRenderModeChange?.('dynamic', `Layer does not support Query (${(lm as any)?.type || 'non-feature'})`);
@@ -1898,7 +1989,7 @@ export default function MapView({
   // Keep user's auto-fetch preference even when a layer is not yet supported/visible.
 
   const handleFetchNow = React.useCallback(() => {
-    if (forcedFetchPaused) return;
+    onManualFetchIntent?.();
     if (!ready || !mapRef.current) return;
     const src: any = mapRef.current.getSource(ARC_SOURCE_ID);
     if (!src || src.arcgisType !== 'arcgis-rest' || !src._arcgis) return;
@@ -1917,7 +2008,7 @@ export default function MapView({
       onStatusChange?.('loading');
     } catch {}
     try { src.refresh?.(); } catch {}
-  }, [forcedFetchPaused, ready, mapRef, onStatusChange]);
+  }, [ready, mapRef, onStatusChange, onManualFetchIntent]);
 
   const handleClearData = React.useCallback(() => {
     if (!ready || !mapRef.current) return;
@@ -1941,7 +2032,7 @@ export default function MapView({
 
   const fetchControl = fetchControlContainer ? createPortal(
     <FetchControl
-      autoFetch={!effectiveFetchPaused}
+      autoFetch={displayedAutoFetch}
       supported={pauseSupported}
       isLoading={isLoading}
       renderedCount={renderedCount}

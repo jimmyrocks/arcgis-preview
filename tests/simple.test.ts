@@ -7,6 +7,12 @@ import { buildWhereCondition, formatWhereValue, joinWhereCondition } from '../sr
 import { buildColorExpression, buildCustomLayers } from '../src/lib/esriStyle';
 import { dedupeFeatures } from '../src/lib/dedupeFeatures';
 import {
+  describeArcgisRenderer,
+  getRenderableArcgisRenderer,
+  hasRenderableArcgisRenderer,
+  pickArcgisRendererSymbol
+} from '../src/lib/arcgisRenderer';
+import {
   buildKmlMarkerIconDataUri,
   buildKmlStyleHint,
   evaluateRendererSymbol,
@@ -287,6 +293,35 @@ function test_esriStyle() {
   assertEqual((defaultIconPointLayers[0] as any).paint['icon-opacity'], 1, 'buildCustomLayers: default point icon opacity');
 }
 
+function test_arcgisRendererInfo() {
+  const lineSymbol = { type: 'esriSLS', color: [10, 20, 30, 255], width: 2 };
+  const simple = { type: 'simple', symbol: lineSymbol };
+  assertEqual(hasRenderableArcgisRenderer(simple), true, 'arcgisRenderer: simple renderer is usable');
+  assertEqual(describeArcgisRenderer(simple), 'Simple', 'arcgisRenderer: describes simple renderer');
+  assertEqual(pickArcgisRendererSymbol(simple), lineSymbol, 'arcgisRenderer: picks simple symbol');
+
+  assertEqual(hasRenderableArcgisRenderer({ type: 'default' }), false, 'arcgisRenderer: ignores default renderer marker');
+  assertEqual(describeArcgisRenderer({ type: 'default' }), '', 'arcgisRenderer: does not describe unsupported renderer');
+  assertEqual(hasRenderableArcgisRenderer({ type: 'simple', symbol: { type: 'esriSMS' } }), false, 'arcgisRenderer: ignores empty fallback symbol');
+
+  const classBreakSymbol = { type: 'esriSMS', color: [255, 0, 0, 255], size: 8 };
+  const classBreaks = getRenderableArcgisRenderer({
+    type: 'classbreaks',
+    attributeField: 'score',
+    classBreakInfos: [{ classMinValue: 0, classMaxValue: 10, symbol: classBreakSymbol }]
+  });
+  assertEqual(classBreaks?.type, 'classBreaks', 'arcgisRenderer: normalizes class breaks type');
+  assertEqual(classBreaks?.field, 'score', 'arcgisRenderer: normalizes class breaks field');
+  assertEqual(describeArcgisRenderer(classBreaks), 'Class breaks: score (1)', 'arcgisRenderer: describes class breaks');
+
+  const uniqueDefault = getRenderableArcgisRenderer({
+    type: 'uniquevalue',
+    defaultSymbol: { type: 'esriSFS', color: [0, 0, 255, 128] }
+  });
+  assertEqual(uniqueDefault?.type, 'uniqueValue', 'arcgisRenderer: allows default-only unique renderer');
+  assertEqual(describeArcgisRenderer(uniqueDefault), 'Unique values (default)', 'arcgisRenderer: describes default-only renderer');
+}
+
 function test_kmlStyle() {
   const lineSymbol = {
     type: 'esriSLS',
@@ -399,9 +434,10 @@ function run() {
   test_arcgisDescriptions();
   test_whereBuilder();
   test_esriStyle();
+  test_arcgisRendererInfo();
   test_kmlStyle();
   const dur = Date.now() - start;
-  console.log(`OK - 8 suites passed in ${dur}ms`);
+  console.log(`OK - 9 suites passed in ${dur}ms`);
 }
 
 run();

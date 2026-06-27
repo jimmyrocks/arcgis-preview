@@ -1,13 +1,20 @@
 # ArcGIS Preview (Frontend-Only)
 
-Frontend-only app to preview ArcGIS REST MapServer/FeatureServer layers with MapLibre + @opendataland/source-arcgis and a simple attribute table. No backend required.
+Frontend-only app to preview ArcGIS REST MapServer, FeatureServer, ImageServer,
+and VectorTileServer layers with MapLibre + @opendataland/source-arcgis. No
+backend required.
 
 What’s here
 
 - Vite + React + TypeScript frontend at repo root
-- MapLibre map with @opendataland/source-arcgis
-- Attribute table using TanStack Table
-- URL input synced to `?url=` query param
+- MapLibre map with feature rendering, imagery fallbacks, raster previews, and
+  vector-tile previews
+- Layer finder/search with recent layers and service navigation
+- WHERE filtering with field-aware validation
+- Feature table, feature inspector, hover/click map-table linking, and export
+  tools
+- Server-derived styling plus custom feature and raster style controls
+- Shareable URL state for layer, filter, camera, basemap, selection, and style
 
 Quick start
 
@@ -27,10 +34,11 @@ To publish:
 1) From `maplibre`, run `npm run deploy`. This builds into `docs/` and copies
    it to the `gh-pages` branch root via a throwaway git worktree, then commits
    on `gh-pages` — **locally only, it does not push.**
-2) Push to the private server first, then mirror to GitHub:
-   `git push gitea gh-pages && git push origin gh-pages`
+2) To publish in the same step, run `npm run deploy -- --push`. This pushes
+   `gh-pages` to `gitea` first, then mirrors it to `origin`.
 
 Notes
 
 - Everything runs in the browser. Some servers may block cross-origin fetches for the table; map rendering often still works via MapLibre.
-- Table loads up to 1000 records by default; adjust in `src/lib/arcgis.ts`.
+- Feature layers fetch progressively for the visible map extent. Auto-fetch can
+  be paused, and manual fetches use the same in-browser cache.

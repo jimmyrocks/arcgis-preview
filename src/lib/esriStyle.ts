@@ -38,7 +38,7 @@ function buildPointIconLayer(
   layerIdPrefix: string,
   color: unknown
 ): LayerSpecification {
-  const iconSize = Math.max(10, Math.min(80, Number(style.point?.iconSize) || 24));
+  const iconSize = clampSizedNumber(style.point?.iconSize, 24, 4, 80);
   const iconAnchor = POINT_ICON_ANCHOR_OPTIONS.includes(style.point?.iconAnchor as any) ? style.point?.iconAnchor : 'center';
   const iconRotationAlignment = POINT_ICON_ALIGNMENT_OPTIONS.includes(style.point?.iconRotationAlignment as any) ? style.point?.iconRotationAlignment : 'auto';
   const iconPitchAlignment = POINT_ICON_ALIGNMENT_OPTIONS.includes(style.point?.iconPitchAlignment as any) ? style.point?.iconPitchAlignment : 'auto';
@@ -72,7 +72,7 @@ function buildLabelLayer(
 ): LayerSpecification | null {
   const field = String(style.label?.field || '').trim();
   if (!style.label?.enabled || !field) return null;
-  const textSize = Math.max(8, Math.min(32, Number(style.label?.size) || 12));
+  const textSize = clampSizedNumber(style.label?.size, 12, 4, 32);
   const placement = geometry === 'polyline' ? 'line' : 'point';
   const position = LABEL_POSITIONS[String(style.label?.position || 'top')] || LABEL_POSITIONS.top;
   return {
@@ -118,9 +118,9 @@ export function buildCustomLayers(
         paint: {
           'circle-color': style.point?.fillColor ?? '#3388ff',
           'circle-opacity': style.point?.fillOpacity ?? 0.7,
-          'circle-radius': style.point?.radius ?? 6,
+          'circle-radius': clampSizedNumber(style.point?.radius, 6, 0.5, 100),
           'circle-stroke-color': style.point?.color ?? '#3388ff',
-          'circle-stroke-width': style.point?.weight ?? 1,
+          'circle-stroke-width': clampStrokeWidth(style.point?.weight, 1),
           'circle-stroke-opacity': style.point?.opacity ?? 1
         }
       });
@@ -137,7 +137,7 @@ export function buildCustomLayers(
       source: sourceId,
       paint: {
         'line-color': style.line?.color ?? '#3388ff',
-        'line-width': style.line?.weight ?? 0.5,
+        'line-width': clampStrokeWidth(style.line?.weight, 0.5),
         'line-opacity': style.line?.opacity ?? 1,
         ...(style.line?.dashArray
           ? { 'line-dasharray': style.line.dashArray.split(',').map((v) => Number(v.trim()) || 0) }
@@ -168,7 +168,7 @@ export function buildCustomLayers(
     source: sourceId,
     paint: {
       'line-color': style.polygon?.color ?? '#3388ff',
-      'line-width': style.polygon?.weight ?? 2,
+      'line-width': clampStrokeWidth(style.polygon?.weight, 2),
       'line-opacity': style.polygon?.opacity ?? 1,
       ...(style.polygon?.dashArray
         ? { 'line-dasharray': style.polygon.dashArray.split(',').map((v) => Number(v.trim()) || 0) }
@@ -206,9 +206,9 @@ export function buildAttributeLayers(
         paint: {
           'circle-color': colorExpr as any,
           'circle-opacity': base.point?.fillOpacity ?? 0.7,
-          'circle-radius': base.point?.radius ?? 6,
+          'circle-radius': clampSizedNumber(base.point?.radius, 6, 0.5, 100),
           'circle-stroke-color': base.point?.color ?? '#3388ff',
-          'circle-stroke-width': base.point?.weight ?? 1,
+          'circle-stroke-width': clampStrokeWidth(base.point?.weight, 1),
           'circle-stroke-opacity': base.point?.opacity ?? 1
         }
       });
@@ -225,7 +225,7 @@ export function buildAttributeLayers(
       source: sourceId,
       paint: {
         'line-color': colorExpr as any,
-        'line-width': base.line?.weight ?? 0.5,
+        'line-width': clampStrokeWidth(base.line?.weight, 0.5),
         'line-opacity': base.line?.opacity ?? 1
       }
     });
@@ -249,13 +249,30 @@ export function buildAttributeLayers(
     source: sourceId,
     paint: {
       'line-color': base.polygon?.color ?? '#3388ff',
-      'line-width': base.polygon?.weight ?? 2,
+      'line-width': clampStrokeWidth(base.polygon?.weight, 2),
       'line-opacity': base.polygon?.opacity ?? 1
     }
   });
   const labelLayer = buildLabelLayer(sourceId, geometry, base, layerIdPrefix);
   if (labelLayer) layers.push(labelLayer);
   return layers;
+}
+
+function clampSizedNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+function roundToTenth(value: number): number {
+  return Number((Math.round(value * 10) / 10).toFixed(1));
+}
+
+function clampStrokeWidth(value: unknown, fallback: number): number {
+  const n = Number(value);
+  const clamped = Math.max(0, Math.min(50, Number.isFinite(n) ? n : fallback));
+  if (clamped === 0) return 0;
+  return Math.max(0.1, roundToTenth(clamped));
 }
 
 export function buildColorExpression(rule: AttributeStyleRule): unknown {

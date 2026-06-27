@@ -102,12 +102,26 @@ export type DisplayStyleOptions = {
   showLegend?: boolean;
 };
 
+export type RasterResampling = 'linear' | 'nearest';
+
+export type RasterStyleOptions = {
+  opacity?: number; // 0..1
+  brightnessMin?: number; // 0..1
+  brightnessMax?: number; // 0..1
+  contrast?: number; // -1..1
+  saturation?: number; // -1..1
+  hueRotate?: number; // degrees
+  resampling?: RasterResampling;
+  fadeDuration?: number; // milliseconds
+};
+
 export type GeometryStyleOptions = {
   point?: PointStyleOptions;
   line?: LineStyleOptions;
   polygon?: PolygonStyleOptions;
   label?: LabelStyleOptions;
   display?: DisplayStyleOptions;
+  raster?: RasterStyleOptions;
 };
 
 export type StyleMode = 'server' | 'custom' | 'attribute';
@@ -208,5 +222,15 @@ export const defaultStyleOptions: GeometryStyleOptions = {
   display: {
     hideSuspectedDuplicates: false,
     showLegend: true,
+  },
+  raster: {
+    opacity: 1,
+    brightnessMin: 0,
+    brightnessMax: 1,
+    contrast: 0,
+    saturation: 0,
+    hueRotate: 0,
+    resampling: 'linear',
+    fadeDuration: 300,
   },
 };

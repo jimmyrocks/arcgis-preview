@@ -96,6 +96,96 @@ function buildPerfWarningKey(layerUrl: string | null | undefined, bbox: string |
   return `${cleanLayerUrl}|${normalizeWhereText(where) || '1=1'}|${extentKey}`;
 }
 
+type ViewBounds = { minX: number; minY: number; maxX: number; maxY: number };
+
+function parseBboxBounds(bbox: string | undefined | null): ViewBounds | null {
+  try {
+    const parts = String(bbox || '')
+      .split(',')
+      .map((part) => Number(part.trim()))
+      .filter((value) => Number.isFinite(value));
+    if (parts.length !== 4) return null;
+    const [x1, y1, x2, y2] = parts as [number, number, number, number];
+    return {
+      minX: Math.min(x1, x2),
+      minY: Math.min(y1, y2),
+      maxX: Math.max(x1, x2),
+      maxY: Math.max(y1, y2),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function boundsIntersect(a: ViewBounds, b: ViewBounds): boolean {
+  return a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY;
+}
+
+function normalizeFeatureBbox(bbox: unknown): ViewBounds | null {
+  if (!Array.isArray(bbox) || bbox.length < 4) return null;
+  const values = bbox.slice(0, 4).map((value) => Number(value));
+  if (!values.every((value) => Number.isFinite(value))) return null;
+  const [x1, y1, x2, y2] = values as [number, number, number, number];
+  return {
+    minX: Math.min(x1, x2),
+    minY: Math.min(y1, y2),
+    maxX: Math.max(x1, x2),
+    maxY: Math.max(y1, y2),
+  };
+}
+
+function geometryBounds(geometry: any): ViewBounds | null {
+  if (!geometry) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  const addCoord = (coord: any[]) => {
+    const x = Number(coord?.[0]);
+    const y = Number(coord?.[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  };
+
+  const visit = (value: any) => {
+    if (!Array.isArray(value)) return;
+    if (typeof value[0] === 'number' && typeof value[1] === 'number') {
+      addCoord(value);
+      return;
+    }
+    value.forEach(visit);
+  };
+
+  if (geometry.type === 'GeometryCollection' && Array.isArray(geometry.geometries)) {
+    geometry.geometries.forEach((item: any) => visit(item?.coordinates));
+  } else {
+    visit(geometry.coordinates);
+  }
+
+  if (![minX, minY, maxX, maxY].every((value) => Number.isFinite(value))) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+function featureBounds(feature: any): ViewBounds | null {
+  return normalizeFeatureBbox(feature?.bbox) || geometryBounds(feature?.geometry);
+}
+
+function countFeaturesInBbox(featureCollection: any, bbox: string | undefined | null): number {
+  const features = Array.isArray(featureCollection?.features) ? featureCollection.features : [];
+  const view = parseBboxBounds(bbox);
+  if (!view) return features.length;
+  let count = 0;
+  for (const feature of features) {
+    const bounds = featureBounds(feature);
+    if (bounds && boundsIntersect(bounds, view)) count += 1;
+  }
+  return count;
+}
+
 function parseExtentParam(): Extent | null {
   try {
     const params = new URLSearchParams(location.search);
@@ -254,6 +344,7 @@ function sanitizeGeometryStyle(obj: any): GeometryStyleOptions {
     polygon: sanitizeStyleSection(obj?.polygon, defaultStyleOptions.polygon as Record<string, any>),
     label: sanitizeStyleSection(obj?.label, defaultStyleOptions.label as Record<string, any>),
     display: sanitizeStyleSection(obj?.display, defaultStyleOptions.display as Record<string, any>),
+    raster: sanitizeStyleSection(obj?.raster, defaultStyleOptions.raster as Record<string, any>),
   };
 }
 
@@ -280,11 +371,13 @@ function encodeStyle(opts: GeometryStyleOptions): string {
     const polygon = diffStyleSection(opts?.polygon, defaultStyleOptions.polygon as Record<string, any>);
     const label = diffStyleSection(opts?.label, defaultStyleOptions.label as Record<string, any>);
     const display = diffStyleSection(opts?.display, defaultStyleOptions.display as Record<string, any>);
+    const raster = diffStyleSection(opts?.raster, defaultStyleOptions.raster as Record<string, any>);
     if (point) min.point = point;
     if (line) min.line = line;
     if (polygon) min.polygon = polygon;
     if (label) min.label = label;
     if (display) min.display = display;
+    if (raster) min.raster = raster;
     return JSON.stringify(min);
   } catch { return '{}'; }
 }
@@ -403,6 +496,7 @@ export default function App() {
   const [isLoadingService, setIsLoadingService] = useState<boolean>(false);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [renderStatus, setRenderStatus] = useState<'idle' | 'loading' | 'loaded' | 'error'>('idle');
+  const [autoFetchEnabled, setAutoFetchEnabled] = useState<boolean>(true);
   const PERF_WARN_THRESHOLD = 20000;
   const PERF_COUNT_CACHE_MAX = 80;
   const [perfWarning, setPerfWarning] = useState<{ count: number; warningKey: string; source: 'preflight' | 'loaded' } | null>(null);
@@ -426,6 +520,14 @@ export default function App() {
     () => buildPerfWarningKey((resolvedLayer as any)?.url || '', bbox, where),
     [resolvedLayer, bbox, where]
   );
+  const dismissPerfWarning = React.useCallback(() => {
+    const warningKey = perfWarning?.warningKey || perfWarningKey;
+    if (warningKey) perfDismissedRef.current.add(warningKey);
+    try { perfCountControllerRef.current?.abort(); } catch {}
+    perfCountControllerRef.current = null;
+    setPerfCheckPending(false);
+    setPerfWarning(null);
+  }, [perfWarning, perfWarningKey]);
   const [isHeaderFilterOpen, setIsHeaderFilterOpen] = useState<boolean>(false);
   const headerWhereEditorRef = useRef<WhereEditorHandle | null>(null);
   const layerErrorGateRef = useRef<{ url: string; last: number }>({ url: '', last: 0 });
@@ -483,14 +585,30 @@ export default function App() {
     } catch { }
   };
 
-  const inViewFeatureCount = React.useMemo(() => {
+  const inMemoryFeatureCount = React.useMemo(() => {
     try {
       return Array.isArray(featureCollection?.features) ? featureCollection.features.length : 0;
     } catch {
       return 0;
     }
   }, [featureCollection]);
+  const inViewFeatureCount = React.useMemo(
+    () => countFeaturesInBbox(featureCollection, bbox),
+    [featureCollection, bbox]
+  );
+  const hasActiveWhere = !isTrivialWhere(where);
+  const allFeaturesLoadedInMemory = React.useMemo(() => {
+    if (!isFeatureLayer || hasActiveWhere) return false;
+    const total = Number(featureCount);
+    if (!Number.isFinite(total) || total < 0) return false;
+    return inMemoryFeatureCount >= total;
+  }, [featureCount, hasActiveWhere, inMemoryFeatureCount, isFeatureLayer]);
+
   useEffect(() => {
+    if (!autoFetchEnabled) {
+      setPerfWarning((current) => current?.source === 'loaded' ? null : current);
+      return;
+    }
     if (!perfWarningKey) {
       setPerfWarning((current) => current?.source === 'loaded' ? null : current);
       return;
@@ -508,28 +626,49 @@ export default function App() {
       return;
     }
     setPerfWarning((current) => (current?.source === 'loaded' ? null : current));
-  }, [inViewFeatureCount, perfWarningKey, PERF_WARN_THRESHOLD, renderStatus, perfCheckPending]);
+  }, [autoFetchEnabled, inViewFeatureCount, perfWarningKey, PERF_WARN_THRESHOLD, renderStatus, perfCheckPending]);
 
   useEffect(() => {
-    if (!isFeatureLayer || renderMode !== 'feature' || !(resolvedLayer as any)?.url) {
+    const abortCurrentCheck = () => {
       try { perfCountControllerRef.current?.abort(); } catch {}
       perfCountControllerRef.current = null;
+    };
+
+    if (!autoFetchEnabled || !isFeatureLayer || renderMode !== 'feature' || !(resolvedLayer as any)?.url) {
+      abortCurrentCheck();
       setPerfCheckPending(false);
       setPerfWarning((current) => current?.source === 'preflight' ? null : current);
       return;
     }
     if (!perfWarningKey) {
-      try { perfCountControllerRef.current?.abort(); } catch {}
-      perfCountControllerRef.current = null;
-      setPerfCheckPending(true);
+      abortCurrentCheck();
+      setPerfCheckPending(false);
       setPerfWarning((current) => current?.source === 'preflight' ? null : current);
       return;
     }
     if (perfDismissedRef.current.has(perfWarningKey)) {
-      try { perfCountControllerRef.current?.abort(); } catch {}
-      perfCountControllerRef.current = null;
+      abortCurrentCheck();
       setPerfCheckPending(false);
-      setPerfWarning((current) => current?.warningKey === perfWarningKey && current.source === 'preflight' ? null : current);
+      setPerfWarning((current) => current?.source === 'preflight' ? null : current);
+      return;
+    }
+    if (allFeaturesLoadedInMemory) {
+      abortCurrentCheck();
+      const localCount = inViewFeatureCount;
+      const cache = perfCountCacheRef.current;
+      cache.delete(perfWarningKey);
+      cache.set(perfWarningKey, localCount);
+      while (cache.size > PERF_COUNT_CACHE_MAX) {
+        const oldest = cache.keys().next().value;
+        if (!oldest) break;
+        cache.delete(oldest);
+      }
+      setPerfCheckPending(false);
+      if (localCount > PERF_WARN_THRESHOLD) {
+        setPerfWarning({ count: localCount, warningKey: perfWarningKey, source: 'preflight' });
+      } else {
+        setPerfWarning((current) => current?.source === 'preflight' ? null : current);
+      }
       return;
     }
     const cached = perfCountCacheRef.current.get(perfWarningKey);
@@ -540,15 +679,16 @@ export default function App() {
       if (cached > PERF_WARN_THRESHOLD) {
         setPerfWarning({ count: cached, warningKey: perfWarningKey, source: 'preflight' });
       } else {
-        setPerfWarning((current) => current?.warningKey === perfWarningKey && current.source === 'preflight' ? null : current);
+        setPerfWarning((current) => current?.source === 'preflight' ? null : current);
       }
       return;
     }
 
     const controller = new AbortController();
-    try { perfCountControllerRef.current?.abort(); } catch {}
+    abortCurrentCheck();
     perfCountControllerRef.current = controller;
     setPerfCheckPending(true);
+    setPerfWarning((current) => current?.source === 'preflight' ? null : current);
 
     const timeoutId = window.setTimeout(() => {
       void fetchFeatureCountInExtent((resolvedLayer as any).url, bbox, where, { signal: controller.signal })
@@ -564,19 +704,19 @@ export default function App() {
           }
           setPerfCheckPending(false);
           if (perfDismissedRef.current.has(perfWarningKey)) {
-            setPerfWarning((current) => current?.warningKey === perfWarningKey && current.source === 'preflight' ? null : current);
+            setPerfWarning((current) => current?.source === 'preflight' ? null : current);
             return;
           }
           if (count > PERF_WARN_THRESHOLD) {
             setPerfWarning({ count, warningKey: perfWarningKey, source: 'preflight' });
             return;
           }
-          setPerfWarning((current) => current?.warningKey === perfWarningKey && current.source === 'preflight' ? null : current);
+          setPerfWarning((current) => current?.source === 'preflight' ? null : current);
         })
         .catch((error) => {
           if (controller.signal.aborted) return;
           setPerfCheckPending(false);
-          setPerfWarning((current) => current?.warningKey === perfWarningKey && current.source === 'preflight' ? null : current);
+          setPerfWarning((current) => current?.source === 'preflight' ? null : current);
           if (String((error as Error)?.name || '') === 'AbortError') return;
         });
     }, 180);
@@ -587,7 +727,7 @@ export default function App() {
       if (perfCountControllerRef.current === controller) perfCountControllerRef.current = null;
       setPerfCheckPending(false);
     };
-  }, [bbox, where, isFeatureLayer, perfWarningKey, renderMode, resolvedLayer, PERF_WARN_THRESHOLD]);
+  }, [autoFetchEnabled, bbox, where, isFeatureLayer, perfWarningKey, renderMode, resolvedLayer, allFeaturesLoadedInMemory, inViewFeatureCount, PERF_WARN_THRESHOLD]);
 
   // (Removed) Service Worker registration for share links no longer needed
 
@@ -619,7 +759,6 @@ export default function App() {
   const [whereIssues, setWhereIssues] = useState<{ errors: string[]; unknown: string[]; warnings: string[] }>({ errors: [], unknown: [], warnings: [] });
   const [dismissedIssuesKey, setDismissedIssuesKey] = useState<string>('');
   const hasFilterableLayer = isFeatureLayer && Boolean((resolvedLayer as any)?.url);
-  const hasActiveWhere = !isTrivialWhere(where);
   const hasPendingWhereChanges = normalizeWhereText(whereInput) !== normalizeWhereText(where);
   const filterIssueCount = whereIssues.errors.length + whereIssues.unknown.length + whereIssues.warnings.length;
   const filterIssueTitle = [
@@ -934,11 +1073,10 @@ export default function App() {
     setSelectedFeatureId(null);
     setExportProgress(null);
     setRenderStatus('idle');
-    // Drop color-by-field styling: its rule's field belongs to the previous
-    // layer and won't exist on the new one. Fall back to 'custom' (not 'server')
-    // so any geometry tweaks the user made are preserved.
+    // A new layer should start from the source renderer; the Style tab will show
+    // those server values and switch to custom on the first user edit.
     setAttributeStyle({});
-    setStyleMode((m) => (m === 'attribute' ? 'custom' : m));
+    setStyleMode('server');
     setIsLoadingService(false);
     // Reset WHERE filter when switching layers/services
     try {
@@ -959,6 +1097,9 @@ export default function App() {
   }, [layerMeta?.geometryType, layerMeta?.name, serviceMeta?.mapName, serviceUrl]);
 
   // Table is disabled for now while map UX is refined
+  const isRasterStyleMode = renderMode === 'dynamic' || renderMode === 'fallback_dynamic' || renderMode === 'image';
+  const isGroupLayer = /group/i.test(String(layerMeta?.type || ''));
+  const disableStyle = isGroupLayer || (!(isFeatureLayer && renderMode === 'feature') && !isRasterStyleMode);
 
   return (
     <div className="app">
@@ -1213,11 +1354,7 @@ export default function App() {
                   <button
                     type="button"
                     className="u-btn"
-                    onClick={() => {
-                      perfDismissedRef.current.add(perfWarning.warningKey);
-                      setPerfCheckPending(false);
-                      setPerfWarning(null);
-                    }}
+                    onClick={dismissPerfWarning}
                     style={{ padding: '4px 8px', fontSize: 12 }}
                   >
                     Continue
@@ -1231,6 +1368,9 @@ export default function App() {
               selectedMapLayerId={selectedMapLayerId}
               where={where}
               forcedFetchPaused={perfCheckPending || !!perfWarning}
+              allFeaturesLoaded={allFeaturesLoadedInMemory}
+              onManualFetchIntent={dismissPerfWarning}
+              onAutoFetchChange={setAutoFetchEnabled}
               basemap={basemap}
               layerOpacity={layerOpacity}
               onBasemapChange={(b) => setBasemap(b)}
@@ -1651,7 +1791,7 @@ export default function App() {
             <Sidebar serviceUrl={serviceUrl} onSelectServiceUrl={setServiceUrl}
               serviceMeta={serviceMeta}
               layerMeta={layerMeta}
-              isGroupLayer={/group/i.test(String(layerMeta?.type || ''))}
+              isGroupLayer={isGroupLayer}
               featureCount={featureCount}
               layerDataRows={layerDataRows}
               featureCollection={featureCollection}
@@ -1679,10 +1819,10 @@ export default function App() {
                 } catch {}
               }}
               highlightId={mapHoverId ?? selectedFeatureId}
-              disableQuery={!isFeatureLayer || /group/i.test(String(layerMeta?.type || '')) || (renderMode !== 'feature')}
-              disableData={!isFeatureLayer || /group/i.test(String(layerMeta?.type || '')) || (renderMode !== 'feature')}
-              disableDownload={!isFeatureLayer || /group/i.test(String(layerMeta?.type || '')) || (renderMode !== 'feature')}
-              disableStyle={!isFeatureLayer || /group/i.test(String(layerMeta?.type || '')) || (renderMode !== 'feature')}
+              disableQuery={!isFeatureLayer || isGroupLayer || (renderMode !== 'feature')}
+              disableData={!isFeatureLayer || isGroupLayer || (renderMode !== 'feature')}
+              disableDownload={!isFeatureLayer || isGroupLayer || (renderMode !== 'feature')}
+              disableStyle={disableStyle}
               zoom={zoom}
               bbox={bbox}
               center={center}

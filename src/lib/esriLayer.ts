@@ -1,4 +1,4 @@
-import { getRestServiceUrlInfo } from './arcgis';
+ import { getRestServiceUrlInfo } from './arcgis';
 import { log } from './log';
 import type { MapServiceInfo, MapServiceLayerInfo } from './types/arcgis-rest';
 import { CACHE_TTLS } from './config';
@@ -188,6 +188,7 @@ export async function fetchLayerExtent4326(layerUrl: string, where: string = '1=
 
 // ---- In-memory fetch cache with basic ETag/Last-Modified revalidation ----
 type CacheEntry = { data: any; etag?: string | null; lastModified?: string | null; timestamp: number };
+const JSON_CACHE_MAX = 150;
 const jsonCache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<any>>();
 
@@ -202,6 +203,8 @@ async function fetchJsonCached<T = any>(url: string, opt?: { signal?: AbortSigna
 
   const cached = jsonCache.get(key);
   if (cached && (now - cached.timestamp) < ttl) {
+    jsonCache.delete(key);
+    jsonCache.set(key, cached);
     return cached.data as T;
   }
 
@@ -219,11 +222,21 @@ async function fetchJsonCached<T = any>(url: string, opt?: { signal?: AbortSigna
     const data = await res.json();
     const etag = res.headers.get('ETag');
     const lastModified = res.headers.get('Last-Modified');
-    jsonCache.set(key, { data, etag, lastModified, timestamp: now });
+    setJsonCacheEntry(key, { data, etag, lastModified, timestamp: now });
     return data as T;
   })();
   inflight.set(key, p);
   try { return await p; } finally { inflight.delete(key); }
+}
+
+function setJsonCacheEntry(key: string, entry: CacheEntry): void {
+  jsonCache.delete(key);
+  jsonCache.set(key, entry);
+  while (jsonCache.size > JSON_CACHE_MAX) {
+    const oldest = jsonCache.keys().next().value;
+    if (!oldest) break;
+    jsonCache.delete(oldest);
+  }
 }
 
 function normalizeCacheKey(url: string): string {

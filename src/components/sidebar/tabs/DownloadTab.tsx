@@ -8,6 +8,22 @@ import { toast } from 'react-toastify';
 import { approxPrecisionMetersFromZoomLat } from '../../../lib/mapMath';
 import type { ExportProgress } from '../components/Sidebar';
 
+// gzip + url-safe base64 (padding stripped) — byte-for-byte compatible with
+// geojson.io's own `gz:` decoder, which is far denser than percent-encoding raw
+// JSON. Lets the geojson.io link carry several times more data before it gets
+// too long. Async because CompressionStream is stream-based.
+async function gzipToBase64Url(text: string): Promise<string> {
+  const input = new TextEncoder().encode(text);
+  const stream = new Blob([input]).stream().pipeThrough(new CompressionStream('gzip'));
+  const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+  let bin = '';
+  const CHUNK = 0x8000; // avoid argument-count limits on String.fromCharCode
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 type Props = {
   rows: any[];
   datasetName?: string;
@@ -200,11 +216,26 @@ export default function DownloadTab({ rows, datasetName = 'features', featureCol
     } catch { return ''; }
   }, [hasGeom, featureCount, geomFormat, featureCollection, rows, geometryType, zoom, bbox, whereValue, totalInView, tolerance.range, serviceUrl, layerId, spatialWkid, includeSelectedInGeom, activeFields, selectedFields.length]);
 
-  const geojsonIoUrl = React.useMemo(() => {
-    try {
-      if (!geojsonCopyText) return '';
-      return `https://geojson.io/#data=data:application/json,${encodeURIComponent(geojsonCopyText)}`;
-    } catch { return ''; }
+  // Build the geojson.io link with geojson.io's own `gz:` scheme (gzip + base64),
+  // which fits far more data than percent-encoding raw JSON. Kept in the URL
+  // hash so the payload is never sent to geojson.io's server. Falls back to the
+  // legacy uncompressed form if CompressionStream is unavailable.
+  const [geojsonIoUrl, setGeojsonIoUrl] = React.useState('');
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!geojsonCopyText) { if (!cancelled) setGeojsonIoUrl(''); return; }
+      try {
+        const gz = await gzipToBase64Url(geojsonCopyText);
+        if (!cancelled) setGeojsonIoUrl(`https://geojson.io/#data=gz:${gz}`);
+      } catch {
+        try {
+          const legacy = `https://geojson.io/#data=data:application/json,${encodeURIComponent(geojsonCopyText)}`;
+          if (!cancelled) setGeojsonIoUrl(legacy);
+        } catch { if (!cancelled) setGeojsonIoUrl(''); }
+      }
+    })();
+    return () => { cancelled = true; };
   }, [geojsonCopyText]);
 
   // Disable geojson.io link if the URL becomes excessively long
