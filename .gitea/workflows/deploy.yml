@@ -37,6 +37,9 @@ jobs:
         # source-arcgis-rest does not track a package-lock.json.
         run: npm install --prefix source-arcgis-rest --no-audit --no-fund
 
+      - name: Build source dependency
+        run: npm --prefix source-arcgis-rest run build
+
       - name: Install frontend
         run: npm ci --prefix arcgis-preview
 
