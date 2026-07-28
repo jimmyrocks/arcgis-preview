@@ -599,7 +599,8 @@ export default function App() {
   const hasActiveWhere = !isTrivialWhere(where);
   const allFeaturesLoadedInMemory = React.useMemo(() => {
     if (!isFeatureLayer || hasActiveWhere) return false;
-    const total = Number(featureCount);
+    if (typeof featureCount !== 'number') return false;
+    const total = featureCount;
     if (!Number.isFinite(total) || total < 0) return false;
     return inMemoryFeatureCount >= total;
   }, [featureCount, hasActiveWhere, inMemoryFeatureCount, isFeatureLayer]);

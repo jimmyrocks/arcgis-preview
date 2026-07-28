@@ -1,6 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
-import maplibregl, {
+import * as maplibregl from 'maplibre-gl';
+import {
   LngLat,
   LngLatBounds,
   LngLatLike,
@@ -11,8 +12,11 @@ import maplibregl, {
 } from 'maplibre-gl';
 import { Bounds } from '../lib/geo';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { clearRendererArtifacts } from '@opendataland/source-arcgis';
-import { registerArcGISRestSource } from '@opendataland/source-arcgis';
+import {
+  addArcGISRestSource,
+  clearRendererArtifacts,
+  type ArcGISRestSourceController
+} from '@opendataland/source-arcgis';
 import type { Feature, FeatureCollection } from 'geojson';
 import type { GeometryStyleOptions, AttributeStyleOptions, RasterStyleOptions } from '../lib/styleOptions';
 import type { Extent } from '../lib/types/arcgis-rest';
@@ -92,6 +96,9 @@ const FLASH_LAYER_PREFIX = 'arcgis-flash';
 const ACCENT_COLOR = '#5b8cff';
 const ARC_PAN_DEBOUNCE_MS = 250;
 const ARC_SEGMENT_CACHE_MAX = 40;
+// Publish pages progressively while avoiding long initial cycles on services
+// with thousands of features. Successful cycles still grow this adaptively
+// toward the service cap.
 const ARC_PAGE_SIZE_START = 512;
 const ARC_PAGE_SIZE_MIN = 1;
 const ARC_PAGE_SIZE_FALLBACK_MAX = 1000;
@@ -230,44 +237,6 @@ function applyBasemap(map: MapLibreMap, key: BasemapKey | undefined) {
   }
 }
 
-function installArcgisSegmentLru(src: any, lru: Map<string, true>, maxEntries: number) {
-  if (!src || src.arcgisType !== 'arcgis-rest' || !src._segments) return;
-  const segments = src._segments;
-  if (segments.__odlLruPatched) {
-    lru.clear();
-    return;
-  }
-  const recordQuality = typeof segments.recordQuality === 'function' ? segments.recordQuality.bind(segments) : null;
-  if (!recordQuality) return;
-  const clearCache = typeof segments.clearCache === 'function' ? segments.clearCache.bind(segments) : null;
-  const clearQualityCache = typeof segments.clearQualityCache === 'function' ? segments.clearQualityCache.bind(segments) : null;
-
-  segments.__odlLruPatched = true;
-  segments.recordQuality = (key: string, quality: any) => {
-    recordQuality(key, quality);
-    if (lru.has(key)) lru.delete(key);
-    lru.set(key, true);
-    while (lru.size > maxEntries) {
-      const oldest = lru.keys().next().value;
-      if (!oldest) break;
-      lru.delete(oldest);
-      try { segments.qualityCache?.delete(oldest); } catch {}
-    }
-  };
-  if (clearCache) {
-    segments.clearCache = () => {
-      clearCache();
-      lru.clear();
-    };
-  }
-  if (clearQualityCache) {
-    segments.clearQualityCache = () => {
-      clearQualityCache();
-      lru.clear();
-    };
-  }
-}
-
 function multiplyOpacity(base: any, opacity: number): any {
   const clamped = Math.max(0, Math.min(1, Number.isFinite(opacity) ? opacity : 1));
   if (typeof base === 'number') return base * clamped;
@@ -284,7 +253,7 @@ function getOpacityBase(baseMap: Map<string, Record<string, any>>, map: MapLibre
   }
   if (!(prop in entry)) {
     try {
-      const current = map.getPaintProperty(layerId, prop);
+      const current = map.getPaintProperty(layerId, prop as any);
       entry[prop] = current ?? 1;
     } catch {
       entry[prop] = 1;
@@ -308,7 +277,7 @@ function applyOpacityToLayer(map: MapLibreMap, layerId: string, opacity: number,
   props.forEach((prop) => {
     try {
       const base = getOpacityBase(baseMap, map, layerId, prop);
-      map.setPaintProperty(layerId, prop, multiplyOpacity(base, opacity));
+      map.setPaintProperty(layerId, prop as any, multiplyOpacity(base, opacity));
     } catch { /* ignore */ }
   });
 }
@@ -362,7 +331,7 @@ function applyRasterStyleToLayer(
   if (!layer || layer.type !== 'raster') return;
   const paint = rasterPaintProperties(style?.raster);
   for (const [prop, value] of Object.entries(paint)) {
-    try { map.setPaintProperty(layerId, prop, value); } catch {}
+    try { map.setPaintProperty(layerId, prop as any, value); } catch {}
   }
   const entry = baseMap.get(layerId) || {};
   entry['raster-opacity'] = rasterOpacityBase(style?.raster);
@@ -386,22 +355,6 @@ function idFilter(id: string | number | null | undefined, idField?: string) {
   }
   if (candidates.length === 1) return candidates[0];
   return ['any', ...candidates];
-}
-
-function collectFeaturesFromSource(src: any): Feature[] {
-  try {
-    if (src?._featureStore instanceof Map) {
-      const out: Feature[] = [];
-      for (const entry of src._featureStore.values()) {
-        if (entry?.feature) out.push(entry.feature as Feature);
-      }
-      return out;
-    }
-    if (src?._data?.type === 'FeatureCollection' && Array.isArray(src._data.features)) {
-      return src._data.features as Feature[];
-    }
-  } catch {}
-  return [];
 }
 
 function duplicateIdFilter(ids: Array<string | number>): any[] | null {
@@ -442,14 +395,6 @@ function applySuspectedDuplicateFilter(
       map.setFilter(layerId, nextFilter ?? undefined);
     } catch {}
   }
-}
-
-function estimateSourceFeatureCount(src: any): number {
-  try {
-    if (src?._featureStore instanceof Map) return src._featureStore.size;
-    if (src?._data?.type === 'FeatureCollection' && Array.isArray(src._data.features)) return src._data.features.length;
-  } catch {}
-  return 0;
 }
 
 function getPageSizeCap(maxRecordCount?: number): number {
@@ -728,32 +673,62 @@ function moveOverlayLayersToTop(map: MapLibreMap) {
   });
 }
 
+function removeLayersForSource(map: MapLibreMap, sourceId: string) {
+  const layers = map.getStyle()?.layers || [];
+  for (let index = layers.length - 1; index >= 0; index -= 1) {
+    const layer = layers[index] as LayerSpecification & { source?: string };
+    if (layer.source !== sourceId) continue;
+    try { map.removeLayer(layer.id); } catch {}
+  }
+}
+
 function useMapReady(basemap: BasemapKey | undefined, initialCenter?: [number, number] | null, initialZoom?: number | null) {
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const mapRef = React.useRef<MapLibreMap | null>(null);
   const [ready, setReady] = React.useState(false);
+  const [mapError, setMapError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
-    registerArcGISRestSource(maplibregl as any);
+    const probe = document.createElement('canvas');
+    if (!probe.getContext('webgl2')) {
+      setMapError('This map requires WebGL2. Enable hardware acceleration or use a browser and GPU that support WebGL2.');
+      return;
+    }
     const center: LngLatLike = initialCenter ? [initialCenter[1], initialCenter[0]] : [-122.4194, 37.7749];
     const zoom = typeof initialZoom === 'number' ? initialZoom : 10;
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      style: {
-        version: 8,
-        sources: {},
-        layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#eef2f7' } }]
-      },
-      center,
-      zoom
-    });
+    let map: MapLibreMap;
+    try {
+      map = new maplibregl.Map({
+        container: containerRef.current,
+        style: {
+          version: 8,
+          sources: {},
+          layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#eef2f7' } }]
+        },
+        center,
+        zoom
+      });
+    } catch {
+      setMapError('The map could not initialize WebGL2. Check browser GPU settings and hardware acceleration.');
+      return;
+    }
     mapRef.current = map;
+    const handleMapError = (event: any) => {
+      if (
+        event?.error instanceof maplibregl.GPUInitializationError ||
+        /webgl2|webgl context|gpu initialization/i.test(String(event?.error?.message ?? ''))
+      ) {
+        setMapError('The map could not initialize WebGL2. Check browser GPU settings and hardware acceleration.');
+      }
+    };
+    map.on('error', handleMapError);
     map.on('load', () => {
       applyBasemap(map, basemap);
       setReady(true);
     });
     return () => {
+      map.off('error', handleMapError);
       try { map.remove(); } catch {}
       mapRef.current = null;
     };
@@ -768,7 +743,7 @@ function useMapReady(basemap: BasemapKey | undefined, initialCenter?: [number, n
     applyBasemap(map, basemap);
   }, [basemap, ready]);
 
-  return { containerRef, mapRef, ready };
+  return { containerRef, mapRef, ready, mapError };
 }
 
 export default function MapView({
@@ -806,12 +781,17 @@ export default function MapView({
   onManualFetchIntent,
   onAutoFetchChange
 }: MapViewProps) {
-  const { containerRef, mapRef, ready } = useMapReady(basemap, initialCenter, initialZoom);
+  const { containerRef, mapRef, ready, mapError } = useMapReady(basemap, initialCenter, initialZoom);
+
+  React.useEffect(() => {
+    if (mapError) onStatusChange?.('error');
+  }, [mapError, onStatusChange]);
   const [bearing, setBearing] = React.useState(0);
   const [pitch, setPitch] = React.useState(0);
   const [layerBounds, setLayerBounds] = React.useState<Bounds | null>(null);
   const layerBoundsRef = React.useRef<Bounds | null>(null);
   const layerMetaRef = React.useRef<any>(null);
+  const layerUrlRef = React.useRef<string | undefined>(undefined);
   const idFieldRef = React.useRef<string | undefined>(undefined);
   const geometryRef = React.useRef<GeometryKind | undefined>(undefined);
   const [hoverFeatureId, setHoverFeatureId] = React.useState<string | number | null>(null);
@@ -824,13 +804,13 @@ export default function MapView({
   const featureClickFlagRef = React.useRef<boolean>(false);
   const flashTimeoutRef = React.useRef<number | null>(null);
   const [fetchPaused, setFetchPaused] = React.useState<boolean>(false);
-  const fetchOnceRef = React.useRef<boolean>(false);
   const fetchPausedRef = React.useRef<boolean>(false);
-  const minZoomToFetchRef = React.useRef<number | null>(null);
-  const prevFetchPausedRef = React.useRef<boolean>(false);
+  const arcSourceRef = React.useRef<ArcGISRestSourceController | null>(null);
   const arcPageSizeRef = React.useRef<number>(ARC_PAGE_SIZE_START);
   const opacityBaseRef = React.useRef<Map<string, Record<string, any>>>(new Map());
   const styleApplyVersionRef = React.useRef(0);
+  const styleApplyQueueRef = React.useRef<Promise<void>>(Promise.resolve());
+  const sourceEffectVersionRef = React.useRef(0);
   const duplicateReportKeyRef = React.useRef<string>('');
   const duplicateFilterBaseRef = React.useRef<Map<string, any>>(new Map());
   const onDuplicateSummaryChangeRef = React.useRef(onDuplicateSummaryChange);
@@ -838,7 +818,6 @@ export default function MapView({
   const legendHighlightFilterRef = React.useRef<any[] | null>(legendHighlightFilter ?? null);
   const styledLayerIdsRef = React.useRef<string[]>([]);
   const hideSuspectedDuplicatesRef = React.useRef(false);
-  const segmentLruRef = React.useRef<Map<string, true>>(new Map());
   const lastClearZoomRef = React.useRef<number>(0);
   const [fetchControlContainer, setFetchControlContainer] = React.useState<HTMLDivElement | null>(null);
   const fetchControlRef = React.useRef<maplibregl.IControl | null>(null);
@@ -873,29 +852,13 @@ export default function MapView({
     onAutoFetchChange?.(!fetchPaused);
   }, [fetchPaused, onAutoFetchChange]);
 
-  const applyFetchPause = React.useCallback((paused: boolean, refreshOnResume: boolean = false) => {
-    if (!ready || !mapRef.current) return;
-    const src: any = mapRef.current.getSource(ARC_SOURCE_ID);
-    if (!src || src.arcgisType !== 'arcgis-rest' || !src._arcgis) return;
-    if (minZoomToFetchRef.current == null) {
-      const current = src._arcgis.minZoomToFetch;
-      minZoomToFetchRef.current = Number.isFinite(current) ? current : 0;
-    }
-    if (paused) {
-      src._arcgis.minZoomToFetch = Number.POSITIVE_INFINITY;
-      try { src._abortAllPendingFetches?.(); } catch {}
-      return;
-    }
-    src._arcgis.minZoomToFetch = minZoomToFetchRef.current ?? 0;
-    if (refreshOnResume) {
-      try { src.refresh?.(); } catch {}
-    }
-  }, [ready, mapRef]);
+  const applyFetchPause = React.useCallback((paused: boolean) => {
+    if (!ready) return;
+    arcSourceRef.current?.setPaused(paused);
+  }, [ready]);
 
   React.useEffect(() => {
-    const refreshOnResume = prevFetchPausedRef.current && !effectiveFetchPaused;
-    applyFetchPause(effectiveFetchPaused, refreshOnResume);
-    prevFetchPausedRef.current = effectiveFetchPaused;
+    applyFetchPause(effectiveFetchPaused);
   }, [effectiveFetchPaused, applyFetchPause]);
 
   React.useEffect(() => {
@@ -973,11 +936,7 @@ export default function MapView({
         const currentZoom = map.getZoom();
         if (Math.floor(currentZoom) > Math.floor(lastClearZoomRef.current)) {
           lastClearZoomRef.current = currentZoom;
-          const src: any = map.getSource(ARC_SOURCE_ID);
-          if (src?.arcgisType === 'arcgis-rest') {
-            try { (src._segments?.clearQualityCache || src._segments?.clearCache)?.call(src._segments); } catch {}
-            try { src.refresh?.({ preserveCompleteCoverage: true }); } catch {}
-          }
+          arcSourceRef.current?.refresh({ preserveCompleteCoverage: true });
         } else {
           lastClearZoomRef.current = currentZoom;
         }
@@ -1070,6 +1029,13 @@ export default function MapView({
     if (!ready || !mapRef.current) return;
     const map = mapRef.current;
     let cancelled = false;
+    const effectVersion = ++sourceEffectVersionRef.current;
+    const debugArcgis = new URLSearchParams(window.location.search).get('debugArcgis') === '1';
+    if (debugArcgis) console.debug('[arcgis-preview] source effect start', effectVersion, { serviceUrl, selectedMapLayerId });
+    // Cleanup must only tear down the controller created by this effect.
+    // Metadata resolution is asynchronous, so a stale effect can otherwise
+    // remove the source installed by its replacement.
+    let ownedArcSource: ArcGISRestSourceController | null = null;
 
     // cleanup previous layers/source
     interactionCleanupRef.current?.();
@@ -1077,6 +1043,7 @@ export default function MapView({
     sourceDataCleanupRef.current?.();
     sourceDataCleanupRef.current = null;
     clearRendererArtifacts(map, HIGHLIGHT_HOVER_PREFIX);
+    clearRendererArtifacts(map, HIGHLIGHT_LEGEND_PREFIX);
     clearRendererArtifacts(map, RENDERER_PREFIX);
     clearRendererArtifacts(map, CUSTOM_PREFIX);
     clearRendererArtifacts(map, HIGHLIGHT_SELECTED_PREFIX);
@@ -1085,16 +1052,17 @@ export default function MapView({
     try { if (map.getLayer(DYNAMIC_LAYER_ID)) map.removeLayer(DYNAMIC_LAYER_ID); } catch {}
     try { if (map.getSource(DYNAMIC_SOURCE_ID)) map.removeSource(DYNAMIC_SOURCE_ID); } catch {}
     try { if (map.getSource(VECTOR_SOURCE_ID)) map.removeSource(VECTOR_SOURCE_ID); } catch {}
+    removeLayersForSource(map, ARC_SOURCE_ID);
+    try { arcSourceRef.current?.remove(); } catch {}
     try { if (map.getSource(ARC_SOURCE_ID)) map.removeSource(ARC_SOURCE_ID); } catch {}
+    arcSourceRef.current = null;
     setLayerBounds(null);
     setHoverFeatureId(null);
     layerMetaRef.current = null;
+    layerUrlRef.current = undefined;
     idFieldRef.current = undefined;
     geometryRef.current = undefined;
-    minZoomToFetchRef.current = null;
-    fetchOnceRef.current = false;
     opacityBaseRef.current.clear();
-    segmentLruRef.current.clear();
 
     if (!serviceUrl) return;
 
@@ -1417,6 +1385,7 @@ export default function MapView({
         }
 
         const layerUrl = resolved.url;
+        layerUrlRef.current = layerUrl;
         const [serviceMeta, lm] = await Promise.all([
           resolved.serviceRootUrl ? fetchServiceMetadata(resolved.serviceRootUrl).catch(() => null) : Promise.resolve(null),
           fetchLayerMetadata(layerUrl).catch(() => null)
@@ -1497,32 +1466,33 @@ export default function MapView({
 
         clearRendererArtifacts(map, HIGHLIGHT_HOVER_PREFIX);
         clearRendererArtifacts(map, HIGHLIGHT_SELECTED_PREFIX);
+        clearRendererArtifacts(map, HIGHLIGHT_LEGEND_PREFIX);
         clearRendererArtifacts(map, RENDERER_PREFIX);
         clearRendererArtifacts(map, CUSTOM_PREFIX);
-        try { if (map.getLayer(ARC_SOURCE_ID)) map.removeLayer(ARC_SOURCE_ID); } catch {}
+        interactionCleanupRef.current?.();
+        interactionCleanupRef.current = null;
+        sourceDataCleanupRef.current?.();
+        sourceDataCleanupRef.current = null;
+        removeLayersForSource(map, ARC_SOURCE_ID);
+        try { arcSourceRef.current?.remove(); } catch {}
         try { if (map.getSource(ARC_SOURCE_ID)) map.removeSource(ARC_SOURCE_ID); } catch {}
-        map.addSource(ARC_SOURCE_ID, {
-          type: 'arcgis-rest',
+        arcSourceRef.current = null;
+        const arcSource = addArcGISRestSource(map, ARC_SOURCE_ID, {
           url: layerUrl,
           where: (where || '1=1').trim() || '1=1',
           outFields: '*',
           idField: idField || 'OBJECTID',
-          promoteId: idField || undefined,
           pageSize: ARC_PAGE_SIZE_START,
           requestBuffer: 0.2,
           debounce: ARC_PAN_DEBOUNCE_MS,
           maxAllowableOffsetPixels: 1.5,
-          data: { type: 'FeatureCollection', features: [] }
-        } as any);
-        try {
-          const src: any = map.getSource(ARC_SOURCE_ID);
-          installArcgisSegmentLru(src, segmentLruRef.current, ARC_SEGMENT_CACHE_MAX);
-          if (src?.arcgisType === 'arcgis-rest' && src?._arcgis) {
-            const initialPageSize = normalizePageSize(ARC_PAGE_SIZE_START, Number(src?._serviceInfo?.maxRecordCount));
-            arcPageSizeRef.current = initialPageSize;
-            src._arcgis.pageSize = initialPageSize;
-          }
-        } catch {}
+          segmentCacheMax: ARC_SEGMENT_CACHE_MAX,
+          debug: debugArcgis
+        });
+        ownedArcSource = arcSource;
+        arcSourceRef.current = arcSource;
+        if (debugArcgis) console.debug('[arcgis-preview] source controller added', effectVersion, Boolean(map.getSource(ARC_SOURCE_ID)));
+        arcPageSizeRef.current = ARC_PAGE_SIZE_START;
         applyFetchPause(fetchPausedRef.current);
 
         onRenderModeChange?.('feature');
@@ -1542,57 +1512,59 @@ export default function MapView({
             styleApplyVersionRef.current === styleApplyVersion &&
             Boolean(map.getSource(ARC_SOURCE_ID));
 
-          const geom = geometryRef.current ?? normalizeGeometryType((lm as any)?.geometryType) ?? 'polygon';
-          const applied = await applyFeatureSourceStyle({
-            map,
-            sourceId: ARC_SOURCE_ID,
-            geometry: geom,
-            styleMode,
-            customStyle,
-            attributeStyle,
-            renderer: (lm as any)?.drawingInfo?.renderer,
-            rendererLayerPrefix: RENDERER_PREFIX,
-            customLayerPrefix: CUSTOM_PREFIX,
-            lineHitLayerId: LINE_HIT_LAYER_ID,
-            pointLabelFallbackColor: ACCENT_COLOR
+          const queued = styleApplyQueueRef.current.catch(() => {}).then(async () => {
+            if (!isCurrentStyleApply()) return;
+            const geom = geometryRef.current ?? normalizeGeometryType((lm as any)?.geometryType) ?? 'polygon';
+            const applied = await applyFeatureSourceStyle({
+              map,
+              sourceId: ARC_SOURCE_ID,
+              geometry: geom,
+              styleMode,
+              customStyle,
+              attributeStyle,
+              renderer: (lm as any)?.drawingInfo?.renderer,
+              rendererLayerPrefix: RENDERER_PREFIX,
+              customLayerPrefix: CUSTOM_PREFIX,
+              lineHitLayerId: LINE_HIT_LAYER_ID,
+              pointLabelFallbackColor: ACCENT_COLOR,
+              serviceUrl: layerUrl
+            });
+            // A newer pass is queued behind this one. It will clear and
+            // replace these artifacts; stale work must never clear globally.
+            if (!isCurrentStyleApply()) return;
+            applied.visualLayerIds.forEach((id) => {
+              opacityBaseRef.current.delete(id);
+              applyOpacityToLayer(map, id, layerOpacity, opacityBaseRef.current);
+            });
+            styledLayerIdsRef.current = applied.interactiveLayerIds;
+            duplicateFilterBaseRef.current.clear();
+            applySuspectedDuplicateFilter(map, styledLayerIdsRef.current, duplicateFilterBaseRef.current, suspectedDuplicateIdsRef.current, hideSuspectedDuplicatesRef.current);
+            interactionCleanupRef.current?.();
+            interactionCleanupRef.current = bindFeatureInteractions(
+              map,
+              applied.interactiveLayerIds,
+              (id) => setHoverFeatureId(id),
+              onMapFeatureClickId,
+              featureClickFlagRef
+            );
+            updateHighlightStates(map, ARC_SOURCE_ID, hoverFeatureId, selectedFeatureId, prevHoverIdRef.current, prevSelectedIdRef.current);
+            moveOverlayLayersToTop(map);
           });
-          if (!isCurrentStyleApply()) {
-            clearRendererArtifacts(map, RENDERER_PREFIX);
-            clearRendererArtifacts(map, CUSTOM_PREFIX);
-            return;
-          }
-          applied.visualLayerIds.forEach((id) => {
-            opacityBaseRef.current.delete(id);
-            applyOpacityToLayer(map, id, layerOpacity, opacityBaseRef.current);
-          });
-          styledLayerIdsRef.current = applied.interactiveLayerIds;
-          duplicateFilterBaseRef.current.clear();
-          applySuspectedDuplicateFilter(map, styledLayerIdsRef.current, duplicateFilterBaseRef.current, suspectedDuplicateIdsRef.current, hideSuspectedDuplicatesRef.current);
-          interactionCleanupRef.current?.();
-          interactionCleanupRef.current = bindFeatureInteractions(
-            map,
-            applied.interactiveLayerIds,
-            (id) => setHoverFeatureId(id),
-            onMapFeatureClickId,
-            featureClickFlagRef
-          );
-          if (!isCurrentStyleApply()) return;
-          updateHighlightStates(map, ARC_SOURCE_ID, hoverFeatureId, selectedFeatureId, prevHoverIdRef.current, prevSelectedIdRef.current);
-          moveOverlayLayersToTop(map);
+          styleApplyQueueRef.current = queued.catch(() => {});
+          await queued;
         };
-        await applyStyle();
-
-        // Listen for source data to emit feature collection and bounds
-        let latestPendingCount: number | null = null;
-        let previousPendingCount: number | null = null;
+        // Subscribe before renderer preparation. Picture-marker downloads can
+        // be slow or fail independently and must never block source lifecycle
+        // status/data events.
+        let latestPendingCount = 0;
+        let previousPendingCount = 0;
         let cycleHadFailure = false;
         let stableFeatureCount = 0;
         let snapshotTimer: number | null = null;
         const flushSourceSnapshot = () => {
           try {
-            const src: any = map.getSource(ARC_SOURCE_ID);
-            if (!src) return;
-            const rawFeatures = collectFeaturesFromSource(src);
+            if (arcSourceRef.current !== arcSource) return;
+            const rawFeatures = arcSource.getFeatureCollection().features;
             const { features: feats, summary } = dedupeFeatures(rawFeatures);
             if (summary.reportKey !== duplicateReportKeyRef.current) {
               duplicateReportKeyRef.current = summary.reportKey;
@@ -1611,14 +1583,12 @@ export default function MapView({
             const b = boundsFromFeatures(feats);
             setLayerBounds(b);
             onDownloadedExtentChange?.(boundsToExtent4326(b));
-            if (latestPendingCount != null) {
-              if (latestPendingCount > 0) {
-                setIsLoading(true);
-                onStatusChange?.('loading');
-              } else {
-                setIsLoading(false);
-                onStatusChange?.('loaded');
-              }
+            if (latestPendingCount > 0) {
+              setIsLoading(true);
+              onStatusChange?.('loading');
+            } else {
+              setIsLoading(false);
+              onStatusChange?.('loaded');
             }
           } catch {}
         };
@@ -1629,129 +1599,80 @@ export default function MapView({
             flushSourceSnapshot();
           }, ARC_SNAPSHOT_DEBOUNCE_MS);
         };
-        const dataHandler = (e?: any) => {
-          try {
-            if (e?.sourceId && e.sourceId !== ARC_SOURCE_ID) return;
-            const src: any = map.getSource(ARC_SOURCE_ID);
-            if (!src) return;
-
-            let pendingCount: number | null = null;
-            if (src?.arcgisType === 'arcgis-rest') {
-              try {
-                const pending = src._segments?.pending;
-                pendingCount = typeof pending?.size === 'number' ? pending.size : null;
-              } catch {}
-            }
-            latestPendingCount = pendingCount;
-
-            if (src?.arcgisType === 'arcgis-rest' && src?._arcgis) {
-              const maxRecordCount = Number(src?._serviceInfo?.maxRecordCount);
-              const cycleSettled =
-                previousPendingCount != null &&
-                previousPendingCount > 0 &&
-                pendingCount != null &&
-                pendingCount === 0;
-              if (cycleSettled) {
-                const renderedCount = estimateSourceFeatureCount(src);
-                if (!cycleHadFailure && renderedCount > stableFeatureCount) {
-                  const nextPageSize = normalizePageSize(arcPageSizeRef.current * 2, maxRecordCount);
-                  if (nextPageSize !== arcPageSizeRef.current) {
-                    arcPageSizeRef.current = nextPageSize;
-                    src._arcgis.pageSize = nextPageSize;
-                  }
-                }
-                stableFeatureCount = renderedCount;
-                cycleHadFailure = false;
+        const dataCleanup = arcSource.on('data', () => scheduleSourceSnapshot());
+        const statusCleanup = arcSource.on('status', (status) => {
+          if (arcSourceRef.current !== arcSource) return;
+          latestPendingCount = status.pendingRequests;
+          const cycleSettled = previousPendingCount > 0 && status.pendingRequests === 0;
+          // Update before any setPageSize() call, which emits status
+          // synchronously and would otherwise re-enter this handler as another
+          // completed cycle.
+          previousPendingCount = status.pendingRequests;
+          if (cycleSettled) {
+            if (!cycleHadFailure && status.featureCount > stableFeatureCount) {
+              const nextPageSize = normalizePageSize(arcPageSizeRef.current * 2, status.maxRecordCount);
+              if (nextPageSize !== arcPageSizeRef.current) {
+                arcPageSizeRef.current = nextPageSize;
+                arcSource.setPageSize(nextPageSize);
               }
             }
-            previousPendingCount = pendingCount;
-
-            if (pendingCount != null && pendingCount > 0) {
-              setIsLoading(true);
-              onStatusChange?.('loading');
-            }
-
+            stableFeatureCount = status.featureCount;
+            cycleHadFailure = false;
+            // The controller's store is authoritative as soon as the request
+            // settles. Do not make preview snapshots depend solely on the
+            // renderer worker's updateData acknowledgement.
             scheduleSourceSnapshot();
-
-            if (fetchOnceRef.current && fetchPausedRef.current && src?.arcgisType === 'arcgis-rest') {
-              if (pendingCount == null || pendingCount === 0) {
-                try {
-                  if (minZoomToFetchRef.current == null && src._arcgis?.minZoomToFetch != null) {
-                    minZoomToFetchRef.current = src._arcgis.minZoomToFetch;
-                  }
-                  src._arcgis.minZoomToFetch = Number.POSITIVE_INFINITY;
-                  src._abortAllPendingFetches?.();
-                } catch {}
-                fetchOnceRef.current = false;
-              }
-            }
-          } catch {}
-        };
-        const loadingHandler = (e: any) => {
+          }
+          const loading = status.phase === 'loading';
+          setIsLoading(loading);
+          onStatusChange?.(status.phase === 'error' ? 'error' : loading ? 'loading' : 'loaded');
+        });
+        const errorCleanup = arcSource.on('error', ({ error, status }) => {
           try {
-            if (e?.sourceId && e.sourceId !== ARC_SOURCE_ID) return;
-            setIsLoading(true);
-            onStatusChange?.('loading');
-          } catch {}
-        };
-        const errorHandler = (e: any) => {
-          try {
-            if (e?.sourceId && e.sourceId !== ARC_SOURCE_ID) return;
-            const src: any = map.getSource(ARC_SOURCE_ID);
-            if (!src || src.arcgisType !== 'arcgis-rest' || !src._arcgis) return;
+            if (arcSourceRef.current !== arcSource) return;
+            console.error('[arcgis-preview] ArcGIS source controller error', error);
             if (cycleHadFailure) return;
             cycleHadFailure = true;
-
-            const maxRecordCount = Number(src?._serviceInfo?.maxRecordCount);
-            const nextPageSize = normalizePageSize(Math.floor(arcPageSizeRef.current / 2), maxRecordCount);
+            const nextPageSize = normalizePageSize(Math.floor(arcPageSizeRef.current / 2), status.maxRecordCount);
             if (nextPageSize < arcPageSizeRef.current) {
               arcPageSizeRef.current = nextPageSize;
-              src._arcgis.pageSize = nextPageSize;
-              let pendingCount: number | null = null;
-              try {
-                const pending = src._segments?.pending;
-                pendingCount = typeof pending?.size === 'number' ? pending.size : null;
-              } catch {}
-              if (pendingCount != null && pendingCount > 0) {
-                try { src._abortAllPendingFetches?.(); } catch {}
-                try { src.refresh?.(); } catch {}
-              }
+              arcSource.setPageSize(nextPageSize);
+              if (status.pendingRequests > 0) arcSource.refresh();
             }
           } catch {}
-        };
-        const idleHandler = () => {
-          try {
-            if (!isLoadingRef.current) return;
-            const src: any = map.getSource(ARC_SOURCE_ID);
-            if (!src || src.arcgisType !== 'arcgis-rest') return;
-            let pendingCount: number | null = null;
-            try {
-              const pending = src._segments?.pending;
-              pendingCount = typeof pending?.size === 'number' ? pending.size : null;
-            } catch {}
-            if (pendingCount != null && pendingCount > 0) return;
-            latestPendingCount = pendingCount;
-            if (snapshotTimer != null) {
-              window.clearTimeout(snapshotTimer);
-              snapshotTimer = null;
-            }
-            flushSourceSnapshot();
-          } catch {}
-        };
-        map.on('sourcedata', dataHandler);
-        map.on('dataloading', loadingHandler);
-        map.on('error', errorHandler);
-        map.on('idle', idleHandler);
+        });
         sourceDataCleanupRef.current = () => {
           if (snapshotTimer != null) {
             window.clearTimeout(snapshotTimer);
             snapshotTimer = null;
           }
-          map.off('sourcedata', dataHandler);
-          map.off('dataloading', loadingHandler);
-          map.off('error', errorHandler);
-          map.off('idle', idleHandler);
+          dataCleanup();
+          statusCleanup();
+          errorCleanup();
         };
+        // Renderer image preparation is asynchronous. Reconcile once after
+        // subscribing so an initial source cycle that completed while the
+        // renderer was loading is not missed.
+        const initialStatus = arcSource.getStatus();
+        latestPendingCount = initialStatus.pendingRequests;
+        previousPendingCount = initialStatus.pendingRequests;
+        stableFeatureCount = initialStatus.featureCount;
+        if (initialStatus.phase === 'loading') {
+          setIsLoading(true);
+          onStatusChange?.('loading');
+        } else if (initialStatus.phase === 'error') {
+          setIsLoading(false);
+          onStatusChange?.('error');
+        } else if (initialStatus.phase !== 'idle') {
+          setIsLoading(false);
+          onStatusChange?.('loaded');
+        }
+        // Do not publish the controller's initial empty seed collection. The
+        // parent can legitimately interpret an empty completed snapshot as
+        // "all features loaded" and pause the source before its scheduled
+        // first request starts.
+        if (initialStatus.featureCount > 0) flushSourceSnapshot();
+        await applyStyle();
       } catch (err) {
         if (cancelled) return;
         onStatusChange?.('error');
@@ -1761,6 +1682,12 @@ export default function MapView({
 
     return () => {
       cancelled = true;
+      if (debugArcgis) {
+        console.debug('[arcgis-preview] source effect cleanup', effectVersion, {
+          ownsCurrent: Boolean(ownedArcSource && arcSourceRef.current === ownedArcSource),
+          sourcePresent: Boolean(map.getSource(ARC_SOURCE_ID))
+        });
+      }
       styleApplyVersionRef.current += 1;
       interactionCleanupRef.current?.();
       interactionCleanupRef.current = null;
@@ -1783,7 +1710,12 @@ export default function MapView({
       try { if (map.getLayer(DYNAMIC_LAYER_ID)) map.removeLayer(DYNAMIC_LAYER_ID); } catch {}
       try { if (map.getSource(DYNAMIC_SOURCE_ID)) map.removeSource(DYNAMIC_SOURCE_ID); } catch {}
       try { if (map.getSource(VECTOR_SOURCE_ID)) map.removeSource(VECTOR_SOURCE_ID); } catch {}
-      try { if (map.getSource(ARC_SOURCE_ID)) map.removeSource(ARC_SOURCE_ID); } catch {}
+      if (ownedArcSource && arcSourceRef.current === ownedArcSource) {
+        removeLayersForSource(map, ARC_SOURCE_ID);
+        try { ownedArcSource.remove(); } catch {}
+        try { if (map.getSource(ARC_SOURCE_ID)) map.removeSource(ARC_SOURCE_ID); } catch {}
+        arcSourceRef.current = null;
+      }
     };
   }, [serviceUrl, selectedMapLayerId, ready]);
 
@@ -1800,16 +1732,14 @@ export default function MapView({
 
   // Update where without recreating the source
   React.useEffect(() => {
-    if (!ready || !mapRef.current) return;
+    if (!ready) return;
     try {
-      const src: any = mapRef.current.getSource(ARC_SOURCE_ID);
-      if (src?.setWhere) {
-        if (src?.arcgisType === 'arcgis-rest' && src?._arcgis) {
-          const resetPageSize = normalizePageSize(ARC_PAGE_SIZE_START, Number(src?._serviceInfo?.maxRecordCount));
-          arcPageSizeRef.current = resetPageSize;
-          src._arcgis.pageSize = resetPageSize;
-        }
-        src.setWhere((where || '1=1').trim() || '1=1');
+      const source = arcSourceRef.current;
+      if (source) {
+        const resetPageSize = normalizePageSize(ARC_PAGE_SIZE_START, source.getStatus().maxRecordCount);
+        arcPageSizeRef.current = resetPageSize;
+        source.setPageSize(resetPageSize);
+        source.setWhere((where || '1=1').trim() || '1=1');
         setIsLoading(true);
         onStatusChange?.('loading');
       }
@@ -1828,24 +1758,23 @@ export default function MapView({
       const src: any = map.getSource(ARC_SOURCE_ID);
       if (!src) return;
       const lm = layerMetaRef.current;
-      void applyFeatureSourceStyle({
-        map,
-        sourceId: ARC_SOURCE_ID,
-        geometry: geometryRef.current ?? normalizeGeometryType((lm as any)?.geometryType) ?? 'polygon',
-        styleMode,
-        customStyle,
-        attributeStyle,
-        renderer: (lm as any)?.drawingInfo?.renderer,
-        rendererLayerPrefix: RENDERER_PREFIX,
-        customLayerPrefix: CUSTOM_PREFIX,
-        lineHitLayerId: LINE_HIT_LAYER_ID,
-        pointLabelFallbackColor: ACCENT_COLOR
-      }).then((applied) => {
-        if (!isCurrentStyleApply()) {
-          clearRendererArtifacts(map, RENDERER_PREFIX);
-          clearRendererArtifacts(map, CUSTOM_PREFIX);
-          return;
-        }
+      const queued = styleApplyQueueRef.current.catch(() => {}).then(async () => {
+        if (!isCurrentStyleApply()) return;
+        const applied = await applyFeatureSourceStyle({
+          map,
+          sourceId: ARC_SOURCE_ID,
+          geometry: geometryRef.current ?? normalizeGeometryType((lm as any)?.geometryType) ?? 'polygon',
+          styleMode,
+          customStyle,
+          attributeStyle,
+          renderer: (lm as any)?.drawingInfo?.renderer,
+          rendererLayerPrefix: RENDERER_PREFIX,
+          customLayerPrefix: CUSTOM_PREFIX,
+          lineHitLayerId: LINE_HIT_LAYER_ID,
+          pointLabelFallbackColor: ACCENT_COLOR,
+          serviceUrl: layerUrlRef.current
+        });
+        if (!isCurrentStyleApply()) return;
         applied.visualLayerIds.forEach((id) => {
           opacityBaseRef.current.delete(id);
           applyOpacityToLayer(map, id, layerOpacity, opacityBaseRef.current);
@@ -1863,7 +1792,8 @@ export default function MapView({
         );
         updateHighlightStates(map, ARC_SOURCE_ID, hoverFeatureId, selectedFeatureId, prevHoverIdRef.current, prevSelectedIdRef.current);
         moveOverlayLayersToTop(map);
-      }).catch(() => {});
+      });
+      styleApplyQueueRef.current = queued.catch(() => {});
     } catch {}
     return () => {
       if (styleApplyVersionRef.current === styleApplyVersion) {
@@ -1977,50 +1907,36 @@ export default function MapView({
     } catch {}
   }, [effectiveHoverId, selectedFeatureId, ready]);
 
-  const pauseSupported = (() => {
-    try {
-      const src: any = mapRef.current?.getSource(ARC_SOURCE_ID);
-      return !!src && src.arcgisType === 'arcgis-rest';
-    } catch {
-      return false;
-    }
-  })();
+  const pauseSupported = arcSourceRef.current != null;
 
   // Keep user's auto-fetch preference even when a layer is not yet supported/visible.
 
   const handleFetchNow = React.useCallback(() => {
     onManualFetchIntent?.();
-    if (!ready || !mapRef.current) return;
-    const src: any = mapRef.current.getSource(ARC_SOURCE_ID);
-    if (!src || src.arcgisType !== 'arcgis-rest' || !src._arcgis) return;
-    if (minZoomToFetchRef.current == null) {
-      const current = src._arcgis.minZoomToFetch;
-      minZoomToFetchRef.current = Number.isFinite(current) ? current : 0;
-    }
-    if (fetchPausedRef.current) {
-      fetchOnceRef.current = true;
-      src._arcgis.minZoomToFetch = minZoomToFetchRef.current ?? 0;
-    } else {
-      fetchOnceRef.current = false;
-    }
+    if (!ready) return;
+    const source = arcSourceRef.current;
+    if (!source) return;
     try {
       setIsLoading(true);
       onStatusChange?.('loading');
     } catch {}
-    try { src.refresh?.(); } catch {}
-  }, [ready, mapRef, onStatusChange, onManualFetchIntent]);
+    try {
+      if (fetchPausedRef.current) source.fetchOnce();
+      else source.refresh();
+    } catch {}
+  }, [ready, onStatusChange, onManualFetchIntent]);
 
   const handleClearData = React.useCallback(() => {
-    if (!ready || !mapRef.current) return;
-    const src: any = mapRef.current.getSource(ARC_SOURCE_ID);
-    if (!src || src.arcgisType !== 'arcgis-rest') return;
-    try { src._resetFeatures?.(); } catch {}
+    if (!ready) return;
+    const source = arcSourceRef.current;
+    if (!source) return;
+    void source.clear();
     try { onFeatureCollection?.({ type: 'FeatureCollection', features: [] }); } catch {}
     try { setLayerBounds(null); } catch {}
     try { onDownloadedExtentChange?.(null); } catch {}
     try { setHoverFeatureId(null); } catch {}
     try { prevHoverIdRef.current = null; } catch {}
-  }, [ready, mapRef, onFeatureCollection, onDownloadedExtentChange]);
+  }, [ready, onFeatureCollection, onDownloadedExtentChange]);
 
   const renderedCount = React.useMemo(() => {
     try {
@@ -2046,6 +1962,27 @@ export default function MapView({
   return (
       <div style={{ position: 'relative', height: '100%', width: '100%', minHeight: 0 }}>
       <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />
+      {mapError && (
+        <div
+          role="alert"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 30,
+            display: 'grid',
+            placeItems: 'center',
+            padding: 24,
+            background: 'var(--panel)',
+            color: 'var(--text)',
+            textAlign: 'center'
+          }}
+        >
+          <div>
+            <strong>Map unavailable</strong>
+            <div style={{ marginTop: 8, maxWidth: 480, color: 'var(--muted)' }}>{mapError}</div>
+          </div>
+        </div>
+      )}
       {fetchControl}
       <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 20, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
         <BasemapChooser value={basemap} onChange={(b) => onBasemapChange?.(b as BasemapKey)} />

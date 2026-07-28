@@ -5,7 +5,7 @@
     "outDir": "./dist",
     "rootDir": "..",
     "module": "CommonJS",
-    "moduleResolution": "Node",
+    "moduleResolution": "bundler",
     "ignoreDeprecations": "6.0",
     "target": "ES2020",
     "jsx": "react-jsx",
@@ -20,5 +20,6 @@
     "../src/lib/whereBuilder.ts",
     "../src/lib/mapMath.ts",
     "./**/*.ts"
-  ]
+  ],
+  "exclude": ["./browser"]
 }

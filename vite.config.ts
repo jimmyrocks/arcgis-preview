@@ -1,6 +1,5 @@
 import { defineConfig } from 'vite';
 import { execSync } from 'child_process';
-import fs from 'fs';
 import path from 'path';
 
 function getGitSha(): string {
@@ -19,7 +18,6 @@ export default defineConfig(({ mode }) => {
     mode === 'production'
       ? path.resolve(__dirname, '../source-arcgis-rest/dist/index.mjs')
       : path.resolve(__dirname, '../source-arcgis-rest/src/index.ts');
-  const sourceArcgisWorker = path.resolve(__dirname, '../source-arcgis-rest/dist/workers/arcgisWorker.mjs');
   const gitSha = getGitSha();
 
   return {
@@ -28,24 +26,6 @@ export default defineConfig(({ mode }) => {
     define: {
       __APP_GIT_SHA__: JSON.stringify(gitSha)
     },
-    plugins:
-      mode === 'production'
-        ? [
-            {
-              name: 'source-arcgis-worker-asset',
-              generateBundle() {
-                const workerSource = fs
-                  .readFileSync(sourceArcgisWorker, 'utf8')
-                  .replace(/\n\/\/# sourceMappingURL=arcgisWorker\.mjs\.map\s*$/, '');
-                this.emitFile({
-                  type: 'asset',
-                  fileName: 'assets/workers/arcgisWorker.mjs',
-                  source: workerSource
-                });
-              }
-            }
-          ]
-        : [],
     server: {
       port: 5173,
       open: true,

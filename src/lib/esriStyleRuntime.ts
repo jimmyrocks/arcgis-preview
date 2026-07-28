@@ -22,6 +22,8 @@ export type ApplyFeatureSourceStyleOptions = {
   customLayerPrefix?: string;
   lineHitLayerId?: string;
   pointLabelFallbackColor?: string;
+  serviceUrl?: string;
+  token?: string;
 };
 
 export type ApplyFeatureSourceStyleResult = {
@@ -114,7 +116,9 @@ export async function applyFeatureSourceStyle({
   rendererLayerPrefix = DEFAULT_RENDERER_LAYER_PREFIX,
   customLayerPrefix = DEFAULT_CUSTOM_LAYER_PREFIX,
   lineHitLayerId,
-  pointLabelFallbackColor = DEFAULT_POINT_FALLBACK_COLOR
+  pointLabelFallbackColor = DEFAULT_POINT_FALLBACK_COLOR,
+  serviceUrl,
+  token
 }: ApplyFeatureSourceStyleOptions): Promise<ApplyFeatureSourceStyleResult> {
   clearRendererArtifacts(map, rendererLayerPrefix);
   clearRendererArtifacts(map, customLayerPrefix);
@@ -128,7 +132,9 @@ export async function applyFeatureSourceStyle({
         sourceId,
         geometryType: geometry,
         layerIdPrefix: rendererLayerPrefix,
-        removeExisting: true
+        removeExisting: true,
+        serviceUrl,
+        token
       });
       if (rendererLayerIds.length) {
         const fallbackIds = addPointLabelFallback(

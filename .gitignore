@@ -5,6 +5,8 @@ node_modules/
 dist/
 docs/
 tests/dist/
+test-results/
+playwright-report/
 
 # Vite / TypeScript caches
 .vite/
