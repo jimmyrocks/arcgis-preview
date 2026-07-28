@@ -18,7 +18,7 @@ What’s here
 
 Quick start
 
-1) Node 18+ required
+1) Node 20.19+ or Node 22.12+ required
 2) `npm install`
 3) `npm run dev`
 4) Paste a layer URL (e.g. `https://services.arcgisonline.com/ArcGIS/rest/services/USA/MapServer/0`)
@@ -26,16 +26,26 @@ Quick start
 Deploy
 
 The site is hosted on GitHub Pages, served from the **root** of the
-`gh-pages` branch (live at https://loc8.us/arcgis-preview/). Source lives on
-`maplibre`; built output is never committed there (`docs/` is gitignored).
+`gh-pages` branch (live at https://loc8.us/arcgis-preview/). Unreleased
+development lives on Gitea's `maplibre-dev` branch. Gitea's `maplibre` branch
+contains released source and triggers deployment. Generated output is committed
+only to GitHub's `gh-pages` branch (`docs/` is gitignored on source branches).
 
-To publish:
+To publish, merge tested changes from `maplibre-dev` into `maplibre`, then push
+Gitea's `maplibre` branch. The workflow in `.gitea/workflows/deploy.yml`:
 
-1) From `maplibre`, run `npm run deploy`. This builds into `docs/` and copies
-   it to the `gh-pages` branch root via a throwaway git worktree, then commits
-   on `gh-pages` — **locally only, it does not push.**
-2) To publish in the same step, run `npm run deploy -- --push`. This pushes
-   `gh-pages` to `gitea` first, then mirrors it to `origin`.
+1) Checks out this repository and
+   `maplibre-gl-plugins/source-arcgis-rest@develop`.
+2) Installs dependencies, typechecks, runs unit tests, and builds the site.
+3) Publishes the generated site to GitHub `gh-pages`.
+
+Run the workflow manually from Gitea's Actions tab when a
+`source-arcgis-rest@develop` change should be deployed without a corresponding
+release-branch commit.
+
+The workflow requires an active Gitea Actions runner, read access to the source
+dependency, and the repository Actions secret `GH_DEPLOY_KEY`. The matching
+public deploy key on GitHub must have write access to this repository.
 
 Notes
 

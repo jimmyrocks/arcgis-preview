@@ -1,0 +1,55 @@
+name: Test and deploy
+
+on:
+  push:
+    branches:
+      - maplibre
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out ArcGIS Preview
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: arcgis-preview
+
+      - name: Check out source-arcgis-rest
+        uses: actions/checkout@v4
+        with:
+          repository: maplibre-gl-plugins/source-arcgis-rest
+          ref: develop
+          token: ${{ secrets.GITEA_TOKEN }}
+          github-server-url: ${{ gitea.server_url }}
+          path: source-arcgis-rest
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install source dependency
+        run: npm ci --prefix source-arcgis-rest
+
+      - name: Install frontend
+        run: npm ci --prefix arcgis-preview
+
+      - name: Typecheck
+        run: npm --prefix arcgis-preview run typecheck
+
+      - name: Run unit tests
+        run: npm --prefix arcgis-preview test
+
+      - name: Build production site
+        run: npm --prefix arcgis-preview run build
+
+      - name: Publish deployment branches
+        env:
+          GH_DEPLOY_KEY: ${{ secrets.GH_DEPLOY_KEY }}
+          GITHUB_PAGES_REPOSITORY: jimmyrocks/arcgis-preview
+        run: bash arcgis-preview/scripts/ci-publish.sh
