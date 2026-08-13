@@ -13,6 +13,7 @@ const DEFAULT_POINT_FALLBACK_COLOR = '#5b8cff';
 export type ApplyFeatureSourceStyleOptions = {
   map: MapLibreMap;
   sourceId: string;
+  sourceLayer?: string;
   geometry: GeometryKind;
   styleMode: StyleMode;
   customStyle?: GeometryStyleOptions;
@@ -41,7 +42,8 @@ export function addPointLabelFallback(
   sourceId: string,
   geometry: GeometryKind | undefined,
   rendererLayerPrefix: string = DEFAULT_RENDERER_LAYER_PREFIX,
-  color: string = DEFAULT_POINT_FALLBACK_COLOR
+  color: string = DEFAULT_POINT_FALLBACK_COLOR,
+  sourceLayer?: string
 ): string[] {
   if (geometry !== 'point' || !layerIds.length) return [];
 
@@ -70,6 +72,7 @@ export function addPointLabelFallback(
     id: fallbackId,
     type: 'circle',
     source: sourceId,
+    ...(sourceLayer ? { 'source-layer': sourceLayer } : {}),
     paint: {
       'circle-color': color,
       'circle-opacity': 0.65,
@@ -90,13 +93,14 @@ export function addPointLabelFallback(
   return [fallbackId];
 }
 
-export function addLineHitLayer(map: MapLibreMap, sourceId: string, layerId: string): string | null {
+export function addLineHitLayer(map: MapLibreMap, sourceId: string, layerId: string, sourceLayer?: string): string | null {
   try {
     if (map.getLayer(layerId)) map.removeLayer(layerId);
     map.addLayer({
       id: layerId,
       type: 'line',
       source: sourceId,
+      ...(sourceLayer ? { 'source-layer': sourceLayer } : {}),
       paint: { 'line-width': 20, 'line-opacity': 0 }
     });
     return layerId;
@@ -108,6 +112,7 @@ export function addLineHitLayer(map: MapLibreMap, sourceId: string, layerId: str
 export async function applyFeatureSourceStyle({
   map,
   sourceId,
+  sourceLayer,
   geometry,
   styleMode,
   customStyle,
@@ -130,6 +135,7 @@ export async function applyFeatureSourceStyle({
     try {
       const rendererLayerIds = await applyRendererAsync(map, serverRenderer as any, {
         sourceId,
+        sourceLayer,
         geometryType: geometry,
         layerIdPrefix: rendererLayerPrefix,
         removeExisting: true,
@@ -144,8 +150,10 @@ export async function applyFeatureSourceStyle({
           geometry,
           rendererLayerPrefix,
           pointLabelFallbackColor
+          ,
+          sourceLayer
         );
-        const lineHitId = geometry === 'polyline' ? addLineHitLayer(map, sourceId, hitLayerId) : null;
+        const lineHitId = geometry === 'polyline' ? addLineHitLayer(map, sourceId, hitLayerId, sourceLayer) : null;
         const visualLayerIds = [...rendererLayerIds, ...fallbackIds];
         return {
           visualLayerIds,
@@ -167,10 +175,10 @@ export async function applyFeatureSourceStyle({
     try {
       if (map.getLayer(layer.id)) map.removeLayer(layer.id);
     } catch {}
-    map.addLayer(layer);
+    map.addLayer(sourceLayer ? { ...layer, 'source-layer': sourceLayer } as LayerSpecification : layer);
   }
 
-  const lineHitId = geometry === 'polyline' ? addLineHitLayer(map, sourceId, hitLayerId) : null;
+  const lineHitId = geometry === 'polyline' ? addLineHitLayer(map, sourceId, hitLayerId, sourceLayer) : null;
   const visualLayerIds = layers.map((layer) => layer.id);
   return {
     visualLayerIds,

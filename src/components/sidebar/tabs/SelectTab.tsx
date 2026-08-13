@@ -112,6 +112,7 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
   layerMeta,
   renderStatus = 'idle',
   renderedFeatureCount = 0,
+  renderDurationMs = null,
   featureCount,
   renderMode = 'feature',
   finderMode = 'full',
@@ -1553,7 +1554,10 @@ const SelectTab = React.forwardRef<SelectTabHandle, SidebarProps & { finderMode?
                   if (!renderedFeatureCount) return 'Rendering features…';
                   const total = typeof featureCount === 'number' && featureCount > 0 ? ` / ${featureCount.toLocaleString()}` : '';
                   const suffix = total ? ' (in view / total)' : ' in view';
-                  return `${renderStatus === 'loading' ? 'Rendering' : 'Rendered'} ${renderedFeatureCount.toLocaleString()}${total} features${suffix}`;
+                  const timing = renderStatus === 'loaded' && renderDurationMs != null
+                    ? ` in ${Math.round(renderDurationMs).toLocaleString()} ms`
+                    : '';
+                  return `${renderStatus === 'loading' ? 'Rendering' : 'Rendered'} ${renderedFeatureCount.toLocaleString()}${total} features${suffix}${timing}`;
                 })()}
               </span>
             </div>

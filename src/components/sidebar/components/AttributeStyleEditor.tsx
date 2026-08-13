@@ -1,8 +1,9 @@
 import React from 'react';
 import type { FeatureCollection } from 'geojson';
-import type { AttributeStyleRule, CategoryStop, NumericStop } from '../../../lib/styleOptions';
+import type { AttributeStyleMeta, AttributeStyleRule, CategoryStop, NumericStop } from '../../../lib/styleOptions';
 import { QUALITATIVE_PALETTES, SEQUENTIAL_PALETTES, type Palette } from '../../../lib/colorPalettes';
 import { classifyCategorical, classifyNumeric, inferSubMode, interpolatePaletteColor } from '../../../lib/classifyField';
+import { fieldHasUnsafeIntegers } from '../../../lib/arcgisInteger';
 
 type FieldMeta = { name: string; type?: string; alias?: string };
 
@@ -10,15 +11,22 @@ type Props = {
   fields?: FieldMeta[];
   rule: AttributeStyleRule | undefined;
   paletteId?: string;
+  numericPrecision?: 'approximate';
   featureCollection?: FeatureCollection;
-  onRuleChange: (rule: AttributeStyleRule, meta?: { paletteId?: string }) => void;
+  onRuleChange: (rule: AttributeStyleRule, meta?: AttributeStyleMeta) => void;
   geometryType?: string | null;
 };
 
-export default function AttributeStyleEditor({ fields, rule, paletteId, featureCollection, onRuleChange }: Props) {
+export default function AttributeStyleEditor({ fields, rule, paletteId, numericPrecision, featureCollection, onRuleChange }: Props) {
   const features = featureCollection?.features ?? [];
   const hasData = features.length > 0;
   const fieldList = fields ?? [];
+  const hasUnsafeNumericValues = rule?.kind === 'numeric'
+    && (numericPrecision === 'approximate' || fieldHasUnsafeIntegers(features as any, rule.field));
+  const metaFor = (field: string, palette: string, kind: AttributeStyleRule['kind']): AttributeStyleMeta => ({
+    paletteId: palette,
+    numericPrecision: kind === 'numeric' && fieldHasUnsafeIntegers(features as any, field) ? 'approximate' : undefined,
+  });
 
   // Sort: numeric fields first, then string/other — easier to find useful fields
   const sortedFields = React.useMemo(() => sortFields(fieldList), [fieldList]);
@@ -64,12 +72,12 @@ export default function AttributeStyleEditor({ fields, rule, paletteId, featureC
       const stops = hasData
         ? classifyCategorical(features as any, rule.field, defaultPalette)
         : [{ value: null, color: '#aaaaaa', label: 'Other / No data', enabled: true }];
-      onRuleChange({ kind: 'categorical', field: rule.field, channel: 'color', stops, fallbackColor: '#aaaaaa' }, { paletteId: defaultPalette.id });
+      onRuleChange({ kind: 'categorical', field: rule.field, channel: 'color', stops, fallbackColor: '#aaaaaa' }, metaFor(rule.field, defaultPalette.id, 'categorical'));
     } else {
       const stops = hasData
         ? classifyNumeric(features as any, rule.field, defaultPalette)
         : [{ value: 0, color: defaultPalette.colors[0] }, { value: 1, color: defaultPalette.colors[defaultPalette.colors.length - 1] }];
-      onRuleChange({ kind: 'numeric', field: rule.field, channel: 'color', stops, fallbackColor: defaultPalette.colors[0] }, { paletteId: defaultPalette.id });
+      onRuleChange({ kind: 'numeric', field: rule.field, channel: 'color', stops, fallbackColor: defaultPalette.colors[0] }, metaFor(rule.field, defaultPalette.id, 'numeric'));
     }
   }
 
@@ -81,13 +89,13 @@ export default function AttributeStyleEditor({ fields, rule, paletteId, featureC
         if (s.value === null) return s; // keep "Other" stop color as-is
         return { ...s, color: palette.colors[i % palette.colors.length] };
       });
-      onRuleChange({ ...rule, stops }, { paletteId: palette.id });
+      onRuleChange({ ...rule, stops }, metaFor(rule.field, palette.id, 'categorical'));
     } else {
       const stops = rule.stops.map((s, i) => {
         const t = rule.stops.length > 1 ? i / (rule.stops.length - 1) : 0;
         return { ...s, color: interpolatePaletteColor(palette.colors, t) };
       });
-      onRuleChange({ ...rule, stops, fallbackColor: palette.colors[0] }, { paletteId: palette.id });
+      onRuleChange({ ...rule, stops, fallbackColor: palette.colors[0] }, metaFor(rule.field, palette.id, 'numeric'));
     }
   }
 
@@ -96,10 +104,10 @@ export default function AttributeStyleEditor({ fields, rule, paletteId, featureC
     const palettes = rule.kind === 'categorical' ? QUALITATIVE_PALETTES : SEQUENTIAL_PALETTES;
     const palette = palettes.find(p => p.id === activePaletteId) ?? palettes[0];
     if (rule.kind === 'categorical') {
-      onRuleChange({ ...rule, stops: classifyCategorical(features as any, rule.field, palette) }, { paletteId: palette.id });
+      onRuleChange({ ...rule, stops: classifyCategorical(features as any, rule.field, palette) }, metaFor(rule.field, palette.id, 'categorical'));
     } else {
       const stops = classifyNumeric(features as any, rule.field, palette);
-      onRuleChange({ ...rule, stops, fallbackColor: palette.colors[0] }, { paletteId: palette.id });
+      onRuleChange({ ...rule, stops, fallbackColor: palette.colors[0] }, metaFor(rule.field, palette.id, 'numeric'));
     }
   }
 
@@ -151,6 +159,12 @@ export default function AttributeStyleEditor({ fields, rule, paletteId, featureC
           ))}
         </div>
       )}
+
+      {hasUnsafeNumericValues ? (
+        <div role="status" style={{ padding: '7px 9px', border: '1px solid #b7791f', borderRadius: 4, background: 'rgba(183, 121, 31, 0.12)', color: 'var(--text)', fontSize: 11, lineHeight: 1.4 }}>
+          This ramp is approximate because the field contains integers outside JavaScript’s exact numeric range. Tables, filters, selection, and exports keep the exact digits.
+        </div>
+      ) : null}
 
       {/* Palette picker — 2-column grid */}
       {rule && (
@@ -429,17 +443,20 @@ function autoClassify(
   fieldName: string,
   fieldType: string | undefined,
   features: any[],
-  onRuleChange: (r: AttributeStyleRule, meta?: { paletteId?: string }) => void,
+  onRuleChange: (r: AttributeStyleRule, meta?: AttributeStyleMeta) => void,
   paletteId?: string,
 ) {
   const kind = inferSubMode(fieldType);
   if (kind === 'categorical') {
     const palette = QUALITATIVE_PALETTES[0];
-    onRuleChange({ kind: 'categorical', field: fieldName, channel: 'color', stops: classifyCategorical(features, fieldName, palette), fallbackColor: '#aaaaaa' }, { paletteId: paletteId || palette.id });
+    onRuleChange({ kind: 'categorical', field: fieldName, channel: 'color', stops: classifyCategorical(features, fieldName, palette), fallbackColor: '#aaaaaa' }, { paletteId: paletteId || palette.id, numericPrecision: undefined });
   } else {
     const palette = SEQUENTIAL_PALETTES[0];
     const stops = classifyNumeric(features, fieldName, palette);
-    onRuleChange({ kind: 'numeric', field: fieldName, channel: 'color', stops, fallbackColor: palette.colors[0] }, { paletteId: paletteId || palette.id });
+    onRuleChange({ kind: 'numeric', field: fieldName, channel: 'color', stops, fallbackColor: palette.colors[0] }, {
+      paletteId: paletteId || palette.id,
+      numericPrecision: fieldHasUnsafeIntegers(features, fieldName) ? 'approximate' : undefined,
+    });
   }
 }
 

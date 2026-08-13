@@ -1,4 +1,5 @@
- import { getRestServiceUrlInfo } from './arcgis';
+import { parseArcGISJSON } from '@opendataland/source-arcgis';
+import { getRestServiceUrlInfo } from './arcgis';
 import { log } from './log';
 import type { MapServiceInfo, MapServiceLayerInfo } from './types/arcgis-rest';
 import { CACHE_TTLS } from './config';
@@ -69,7 +70,7 @@ export async function fetchFeatureCount(layerUrl: string, where?: string, opts?:
   url.searchParams.set('where', (where && where.trim()) || '1=1');
   const res = await fetch(url, { signal: opts?.signal });
   if (!res.ok) throw new Error(`Failed to load feature count: ${res.status}`);
-  const json = await res.json();
+  const json = parseArcGISJSON<any>(await res.text());
   const n = typeof json?.count === 'number' ? json.count : (typeof json?.featureCount === 'number' ? json.featureCount : 0);
   return n;
 }
@@ -86,7 +87,7 @@ export async function fetchFeatureCountInExtent(layerUrl: string, bbox4326: stri
   url.searchParams.set('spatialRel', 'esriSpatialRelIntersects');
   const res = await fetch(url, { signal: opts?.signal });
   if (!res.ok) throw new Error(`Failed to load feature count in extent: ${res.status}`);
-  const json = await res.json();
+  const json = parseArcGISJSON<any>(await res.text());
   const n = typeof json?.count === 'number' ? json.count : (typeof json?.featureCount === 'number' ? json.featureCount : 0);
   return n;
 }
@@ -122,7 +123,7 @@ export async function fetchFeatureAttributes(layerUrl: string, where?: string, l
   url.searchParams.set('resultRecordCount', String(limit));
   const res = await fetch(url, { signal: opts?.signal });
   if (!res.ok) throw new Error(`Failed to load features: ${res.status}`);
-  const json = await res.json();
+  const json = parseArcGISJSON<any>(await res.text());
   const feats = Array.isArray(json?.features) ? json.features : [];
   return feats.map((f: any) => f?.attributes || {});
 }
@@ -219,7 +220,7 @@ async function fetchJsonCached<T = any>(url: string, opt?: { signal?: AbortSigna
       return cached.data as T;
     }
     if (!res.ok) throw new Error(`Failed to fetch: ${res.status}`);
-    const data = await res.json();
+    const data = parseArcGISJSON<T>(await res.text());
     const etag = res.headers.get('ETag');
     const lastModified = res.headers.get('Last-Modified');
     setJsonCacheEntry(key, { data, etag, lastModified, timestamp: now });

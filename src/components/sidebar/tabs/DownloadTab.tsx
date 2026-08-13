@@ -1,4 +1,6 @@
 import React from 'react';
+import { stringifyExactJSON } from '../../../lib/exactJson';
+import { rowsToCSV } from '../../../lib/csv';
 import { downloadText, downloadBlob, filterFeatureCollectionByRowIds } from '../../../lib/export';
 import buildExportMeta from '../../../lib/exportMeta';
 import { featureCollectionToKml, featureCollectionToKmz } from '../../../lib/kml';
@@ -177,14 +179,14 @@ export default function DownloadTab({ rows, datasetName = 'features', featureCol
       });
       const name = geomName || defaultGeomName;
       if (geomFormat === 'kml') {
-        const kml = featureCollectionToKml(out, { name: datasetName, metaJson: JSON.stringify(meta), renderer, geometryType, inlineIcons: false });
+        const kml = featureCollectionToKml(out, { name: datasetName, metaJson: stringifyExactJSON(meta), renderer, geometryType, inlineIcons: false });
         downloadText(`${name}.kml`, 'application/vnd.google-earth.kml+xml', kml);
       } else if (geomFormat === 'kmz') {
-        const kmz = featureCollectionToKmz(out, { name: datasetName, metaJson: JSON.stringify(meta), renderer, geometryType });
+        const kmz = featureCollectionToKmz(out, { name: datasetName, metaJson: stringifyExactJSON(meta), renderer, geometryType });
         downloadBlob(`${name}.kmz`, 'application/vnd.google-earth.kmz', kmz);
       } else {
         try { (out as any)._export_meta = meta; } catch {}
-        downloadText(`${name}.geojson`, 'application/geo+json', JSON.stringify(out));
+        downloadText(`${name}.geojson`, 'application/geo+json', stringifyExactJSON(out));
       }
       showExportToast(readiness.color, featureCount, totalInView ?? undefined);
     } finally {
@@ -212,7 +214,7 @@ export default function DownloadTab({ rows, datasetName = 'features', featureCol
         exportType: 'on-screen', geometryType, zoom, bbox, where: whereValue, rendered: featureCount, totalInView: totalInView ?? undefined, tolerance: tolerance.range || undefined, serviceUrl, layerId, crs: spatialWkid,
       });
       try { (out as any)._export_meta = meta; } catch {}
-      return JSON.stringify(out);
+      return stringifyExactJSON(out);
     } catch { return ''; }
   }, [hasGeom, featureCount, geomFormat, featureCollection, rows, geometryType, zoom, bbox, whereValue, totalInView, tolerance.range, serviceUrl, layerId, spatialWkid, includeSelectedInGeom, activeFields, selectedFields.length]);
 
@@ -260,9 +262,9 @@ export default function DownloadTab({ rows, datasetName = 'features', featureCol
       });
       if (attrFormat === 'json') {
         const payload = { _export_meta: meta, rows: rowsOut };
-        return JSON.stringify(payload);
+        return stringifyExactJSON(payload);
       } else {
-        return toCSV(rowsOut || []);
+        return rowsToCSV(rowsOut || []);
       }
     } catch { return ''; }
   }, [rowCount, attrRows, activeFields, attrFormat, geometryType, zoom, bbox, whereValue, totalInView, tolerance.range, serviceUrl, layerId, spatialWkid]);
@@ -300,11 +302,11 @@ export default function DownloadTab({ rows, datasetName = 'features', featureCol
       }
       if (attrFormat === 'json') {
         const payload = { _export_meta: meta, rows: rowsOut };
-        downloadText(`${name}.json`, 'application/json', JSON.stringify(payload));
+        downloadText(`${name}.json`, 'application/json', stringifyExactJSON(payload));
       } else {
-        const csv = toCSV(rowsOut || []);
+        const csv = rowsToCSV(rowsOut || []);
         downloadText(`${name}.csv`, 'text/csv', csv);
-        downloadText(`${name}.meta.json`, 'application/json', JSON.stringify(meta));
+        downloadText(`${name}.meta.json`, 'application/json', stringifyExactJSON(meta));
       }
       const color = attrReadiness.color;
       const exportTotal = (isPoint && totalInView != null) ? totalInView : layerTotal;
@@ -324,7 +326,7 @@ export default function DownloadTab({ rows, datasetName = 'features', featureCol
         activeFields.forEach(k => { out[k] = r[k]; });
         return out;
       });
-      return toCSV(rowsOut || []);
+      return rowsToCSV(rowsOut || []);
     } catch { return ''; }
   }, [attrRows, activeFields]);
   const attributesJsonQuick = React.useMemo(() => {
@@ -336,7 +338,7 @@ export default function DownloadTab({ rows, datasetName = 'features', featureCol
         return out;
       });
       const payload = { rows: rowsOut };
-      return JSON.stringify(payload);
+      return stringifyExactJSON(payload);
     } catch { return ''; }
   }, [attrRows, activeFields]);
 
@@ -539,17 +541,4 @@ function showExportToast(color: string, rendered: number, total?: number) {
     }
     else if (color === 'green') toast(`Exported visible records (complete: ${rendered.toLocaleString()}).`, { type: 'success', autoClose: 2000 });
   } catch {}
-}
-
-function toCSV(rows: any[]): string {
-  const keys: string[] = Array.from(rows.reduce((s: Set<string>, r: any) => { Object.keys(r || {}).forEach(k => s.add(k)); return s; }, new Set<string>()));
-  if (keys.length === 0) return '';
-  const esc = (v: any) => {
-    if (v == null) return '';
-    const s = String(v);
-    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-  };
-  const header = keys.join(',');
-  const lines = rows.map((r: any) => keys.map(k => esc(r[k])).join(','));
-  return [header, ...lines].join('\n');
 }

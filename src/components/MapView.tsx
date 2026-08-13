@@ -8,7 +8,9 @@ import {
   Map as MapLibreMap,
   MapLayerMouseEvent,
   MapMouseEvent,
-  LayerSpecification
+  LayerSpecification,
+  addProtocol,
+  removeProtocol
 } from 'maplibre-gl';
 import { Bounds } from '../lib/geo';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -23,10 +25,28 @@ import type { Extent } from '../lib/types/arcgis-rest';
 import { extentToBounds, boundsToExtent4326, extentFromFeatures, boundsFromFeatures } from '../lib/geometry';
 import { resolveEsriLayer, fetchLayerMetadata, fetchServiceMetadata, summarizeService } from '../lib/esriLayer';
 import { applyFeatureSourceStyle } from '../lib/esriStyleRuntime';
+import { safeNumericIdAlternative } from '../lib/arcgisInteger';
 import type { GeometryKind } from '../lib/esriStyle';
 import { getFeatureId, findFeatureById } from '../lib/ids';
 import { dedupeFeatures, type DuplicateFeatureSummary } from '../lib/dedupeFeatures';
 import BasemapChooser from './controls/BasemapChooser';
+import {
+  LOCAL_VECTOR_TILE_LAYER,
+  LocalVectorTileIndex
+} from '../lib/localVectorTiles';
+
+declare global {
+  interface Window {
+    __arcgisExperimentalTiles?: {
+      featureCount: number;
+      generatedTiles: number;
+      generatedBytes: number;
+      renderedFeatures: number;
+      sourceFeatures: number;
+      sampleId: string | number | null;
+    };
+  }
+}
 
 type BasemapKey =
   | 'carto_positron'
@@ -76,9 +96,13 @@ export type MapViewProps = {
   onDownloadedExtentChange?: (e: Extent | null) => void;
   onManualFetchIntent?: () => void;
   onAutoFetchChange?: (enabled: boolean) => void;
+  experimentalTiles?: boolean;
+  onRenderTimingChange?: (milliseconds: number | null) => void;
 };
 
 const ARC_SOURCE_ID = 'arcgis-source';
+const EXPERIMENTAL_TILE_SOURCE_ID = 'arcgis-experimental-tile-source';
+const EXPERIMENTAL_TILE_PROTOCOL = 'arcgis-preview-local-mvt';
 const BASEMAP_SOURCE_ID = 'basemap';
 const BASEMAP_LAYER_ID = 'basemap-layer';
 const RENDERER_PREFIX = 'arcgis-style';
@@ -341,14 +365,13 @@ function applyRasterStyleToLayer(
 
 function idFilter(id: string | number | null | undefined, idField?: string) {
   if (id == null) return ['==', ['id'], '__none__'];
-  const asNumber = Number(id);
-  const numeric = Number.isFinite(asNumber) ? asNumber : undefined;
+  const numeric = safeNumericIdAlternative(id);
   const candidates = [
     ['==', ['id'], id],
     ['==', ['get', '__id'], id],
     ...(idField ? [['==', ['get', idField], id]] : [])
   ];
-  if (numeric !== undefined) {
+  if (numeric !== undefined && numeric !== id) {
     candidates.push(['==', ['id'], numeric]);
     candidates.push(['==', ['get', '__id'], numeric]);
     if (idField) candidates.push(['==', ['get', idField], numeric]);
@@ -410,7 +433,7 @@ function normalizePageSize(next: number, maxRecordCount?: number): number {
   return Math.max(ARC_PAGE_SIZE_MIN, Math.min(cap, n));
 }
 
-function ensureHighlightLayers(map: MapLibreMap, sourceId: string, geometry?: GeometryKind) {
+function ensureHighlightLayers(map: MapLibreMap, sourceId: string, geometry?: GeometryKind, sourceLayer?: string) {
   const isPoint = geometry === 'point';
   const isLine = geometry === 'polyline';
   const isPolygon = geometry === 'polygon';
@@ -420,6 +443,7 @@ function ensureHighlightLayers(map: MapLibreMap, sourceId: string, geometry?: Ge
     id: `${HIGHLIGHT_HOVER_PREFIX}-fill`,
     type: 'fill',
     source: sourceId,
+    ...(sourceLayer ? { 'source-layer': sourceLayer } : {}),
     paint: {
       'fill-color': '#ffd166',
       'fill-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 0.2, 0],
@@ -435,6 +459,7 @@ function ensureHighlightLayers(map: MapLibreMap, sourceId: string, geometry?: Ge
     id: `${HIGHLIGHT_HOVER_PREFIX}-line`,
     type: 'line',
     source: sourceId,
+    ...(sourceLayer ? { 'source-layer': sourceLayer } : {}),
     layout: {
       'line-cap': 'round',
       'line-join': 'round'
@@ -455,6 +480,7 @@ function ensureHighlightLayers(map: MapLibreMap, sourceId: string, geometry?: Ge
     id: `${HIGHLIGHT_HOVER_PREFIX}-circle`,
     type: 'circle',
     source: sourceId,
+    ...(sourceLayer ? { 'source-layer': sourceLayer } : {}),
     paint: {
       'circle-color': '#ffd166',
       'circle-stroke-color': '#ffa726',
@@ -482,6 +508,7 @@ function ensureHighlightLayers(map: MapLibreMap, sourceId: string, geometry?: Ge
     id: `${HIGHLIGHT_SELECTED_PREFIX}-fill`,
     type: 'fill',
     source: sourceId,
+    ...(sourceLayer ? { 'source-layer': sourceLayer } : {}),
     paint: {
       'fill-color': ACCENT_COLOR,
       'fill-opacity': ['case', ['boolean', ['feature-state', 'selected'], false], 0.15, 0],
@@ -497,6 +524,7 @@ function ensureHighlightLayers(map: MapLibreMap, sourceId: string, geometry?: Ge
     id: `${HIGHLIGHT_SELECTED_PREFIX}-line`,
     type: 'line',
     source: sourceId,
+    ...(sourceLayer ? { 'source-layer': sourceLayer } : {}),
     layout: {
       'line-cap': 'round',
       'line-join': 'round'
@@ -518,6 +546,7 @@ function ensureHighlightLayers(map: MapLibreMap, sourceId: string, geometry?: Ge
     id: `${HIGHLIGHT_SELECTED_PREFIX}-circle`,
     type: 'circle',
     source: sourceId,
+    ...(sourceLayer ? { 'source-layer': sourceLayer } : {}),
     paint: {
       'circle-color': ACCENT_COLOR,
       'circle-stroke-color': ACCENT_COLOR,
@@ -556,7 +585,7 @@ function ensureHighlightLayers(map: MapLibreMap, sourceId: string, geometry?: Ge
   });
 }
 
-function ensureLegendHighlightLayers(map: MapLibreMap, sourceId: string, geometry?: GeometryKind) {
+function ensureLegendHighlightLayers(map: MapLibreMap, sourceId: string, geometry?: GeometryKind, sourceLayer?: string) {
   const isPoint = geometry === 'point';
   const isLine = geometry === 'polyline';
   const isPolygon = geometry === 'polygon';
@@ -570,6 +599,7 @@ function ensureLegendHighlightLayers(map: MapLibreMap, sourceId: string, geometr
       id: `${HIGHLIGHT_LEGEND_PREFIX}-fill`,
       type: 'fill',
       source: sourceId,
+      ...(sourceLayer ? { 'source-layer': sourceLayer } : {}),
       filter: hiddenFilter as any,
       paint: {
         'fill-color': '#00c2ff',
@@ -583,6 +613,7 @@ function ensureLegendHighlightLayers(map: MapLibreMap, sourceId: string, geometr
       id: `${HIGHLIGHT_LEGEND_PREFIX}-line`,
       type: 'line',
       source: sourceId,
+      ...(sourceLayer ? { 'source-layer': sourceLayer } : {}),
       filter: hiddenFilter as any,
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
@@ -597,6 +628,7 @@ function ensureLegendHighlightLayers(map: MapLibreMap, sourceId: string, geometr
       id: `${HIGHLIGHT_LEGEND_PREFIX}-circle`,
       type: 'circle',
       source: sourceId,
+      ...(sourceLayer ? { 'source-layer': sourceLayer } : {}),
       filter: hiddenFilter as any,
       paint: {
         'circle-color': '#00c2ff',
@@ -631,24 +663,29 @@ function applyLegendHighlightFilter(
   }
 }
 
-function updateHighlightStates(map: MapLibreMap, sourceId: string, hoverId: string | number | null | undefined, selectedId: string | number | null | undefined, prevHoverId?: string | number | null, prevSelectedId?: string | number | null) {
+function updateHighlightStates(map: MapLibreMap, sourceId: string, hoverId: string | number | null | undefined, selectedId: string | number | null | undefined, prevHoverId?: string | number | null, prevSelectedId?: string | number | null, sourceLayer?: string) {
+  const featureTarget = (id: string | number) => ({
+    source: sourceId,
+    ...(sourceLayer ? { sourceLayer } : {}),
+    id
+  });
   try {
     // Clear previous hover state
     if (prevHoverId != null) {
-      map.setFeatureState({ source: sourceId, id: prevHoverId }, { hover: false });
+      map.setFeatureState(featureTarget(prevHoverId), { hover: false });
     }
     // Set new hover state
     if (hoverId != null) {
-      map.setFeatureState({ source: sourceId, id: hoverId }, { hover: true });
+      map.setFeatureState(featureTarget(hoverId), { hover: true });
     }
 
     // Clear previous selected state
     if (prevSelectedId != null && prevSelectedId !== selectedId) {
-      map.setFeatureState({ source: sourceId, id: prevSelectedId }, { selected: false });
+      map.setFeatureState(featureTarget(prevSelectedId), { selected: false });
     }
     // Set new selected state
     if (selectedId != null) {
-      map.setFeatureState({ source: sourceId, id: selectedId }, { selected: true });
+      map.setFeatureState(featureTarget(selectedId), { selected: true });
     }
   } catch {}
 }
@@ -779,9 +816,13 @@ export default function MapView({
   onRenderModeChange,
   onDownloadedExtentChange,
   onManualFetchIntent,
-  onAutoFetchChange
+  onAutoFetchChange,
+  experimentalTiles = false,
+  onRenderTimingChange
 }: MapViewProps) {
   const { containerRef, mapRef, ready, mapError } = useMapReady(basemap, initialCenter, initialZoom);
+  const renderSourceId = experimentalTiles ? EXPERIMENTAL_TILE_SOURCE_ID : ARC_SOURCE_ID;
+  const renderSourceLayer = experimentalTiles ? LOCAL_VECTOR_TILE_LAYER : undefined;
 
   React.useEffect(() => {
     if (mapError) onStatusChange?.('error');
@@ -1036,6 +1077,28 @@ export default function MapView({
     // Metadata resolution is asynchronous, so a stale effect can otherwise
     // remove the source installed by its replacement.
     let ownedArcSource: ArcGISRestSourceController | null = null;
+    let experimentalTileIndex: LocalVectorTileIndex | null = null;
+    let experimentalProtocolRegistered = false;
+    const refreshExperimentalMetrics = () => {
+      if (!experimentalTileIndex || !map.getSource(EXPERIMENTAL_TILE_SOURCE_ID)) return;
+      try {
+        const tileMetrics = experimentalTileIndex.metrics();
+        const sourceFeatures = map.querySourceFeatures(EXPERIMENTAL_TILE_SOURCE_ID, {
+          sourceLayer: LOCAL_VECTOR_TILE_LAYER
+        });
+        const interactiveLayers = styledLayerIdsRef.current.filter((id) => Boolean(map.getLayer(id)));
+        window.__arcgisExperimentalTiles = {
+          featureCount: tileMetrics.featureCount,
+          generatedTiles: tileMetrics.generatedTiles,
+          generatedBytes: tileMetrics.generatedBytes,
+          renderedFeatures: interactiveLayers.length
+            ? map.queryRenderedFeatures({ layers: interactiveLayers }).length
+            : 0,
+          sourceFeatures: sourceFeatures.length,
+          sampleId: sourceFeatures.find((feature) => feature.id != null)?.id ?? null
+        };
+      } catch {}
+    };
 
     // cleanup previous layers/source
     interactionCleanupRef.current?.();
@@ -1052,6 +1115,9 @@ export default function MapView({
     try { if (map.getLayer(DYNAMIC_LAYER_ID)) map.removeLayer(DYNAMIC_LAYER_ID); } catch {}
     try { if (map.getSource(DYNAMIC_SOURCE_ID)) map.removeSource(DYNAMIC_SOURCE_ID); } catch {}
     try { if (map.getSource(VECTOR_SOURCE_ID)) map.removeSource(VECTOR_SOURCE_ID); } catch {}
+    removeLayersForSource(map, EXPERIMENTAL_TILE_SOURCE_ID);
+    try { if (map.getSource(EXPERIMENTAL_TILE_SOURCE_ID)) map.removeSource(EXPERIMENTAL_TILE_SOURCE_ID); } catch {}
+    try { removeProtocol(EXPERIMENTAL_TILE_PROTOCOL); } catch {}
     removeLayersForSource(map, ARC_SOURCE_ID);
     try { arcSourceRef.current?.remove(); } catch {}
     try { if (map.getSource(ARC_SOURCE_ID)) map.removeSource(ARC_SOURCE_ID); } catch {}
@@ -1493,15 +1559,31 @@ export default function MapView({
         arcSourceRef.current = arcSource;
         if (debugArcgis) console.debug('[arcgis-preview] source controller added', effectVersion, Boolean(map.getSource(ARC_SOURCE_ID)));
         arcPageSizeRef.current = ARC_PAGE_SIZE_START;
-        applyFetchPause(fetchPausedRef.current);
+        // A mode switch creates a fresh, empty controller while the parent may
+        // still hold a complete snapshot from the controller being replaced.
+        // Do not let that stale `allFeaturesLoaded` signal pause the new
+        // controller before its first request. User pause and preflight pause
+        // still apply; the normal effect can reapply completion pause after
+        // the new controller publishes data.
+        applyFetchPause(fetchPaused || forcedFetchPaused);
 
         onRenderModeChange?.('feature');
 
         const geomForHighlight = geometryRef.current ?? normalizeGeometryType((lm as any)?.geometryType) ?? 'polygon';
-        ensureHighlightLayers(map, ARC_SOURCE_ID, geomForHighlight);
-        ensureLegendHighlightLayers(map, ARC_SOURCE_ID, geomForHighlight);
+        if (experimentalTiles) {
+          experimentalTileIndex = new LocalVectorTileIndex({ type: 'FeatureCollection', features: [] });
+          addProtocol(EXPERIMENTAL_TILE_PROTOCOL, experimentalTileIndex.protocolHandler as any);
+          experimentalProtocolRegistered = true;
+          map.addSource(
+            EXPERIMENTAL_TILE_SOURCE_ID,
+            experimentalTileIndex.sourceSpecification(EXPERIMENTAL_TILE_PROTOCOL, 'controller')
+          );
+          map.on('idle', refreshExperimentalMetrics);
+        }
+        ensureHighlightLayers(map, renderSourceId, geomForHighlight, renderSourceLayer);
+        ensureLegendHighlightLayers(map, renderSourceId, geomForHighlight, renderSourceLayer);
         applyLegendHighlightFilter(map, legendHighlightFilterRef.current, suspectedDuplicateIdsRef.current, hideSuspectedDuplicatesRef.current);
-        updateHighlightStates(map, ARC_SOURCE_ID, hoverFeatureId, selectedFeatureId, prevHoverIdRef.current, prevSelectedIdRef.current);
+        updateHighlightStates(map, renderSourceId, hoverFeatureId, selectedFeatureId, prevHoverIdRef.current, prevSelectedIdRef.current, renderSourceLayer);
         moveOverlayLayersToTop(map);
 
         // Apply renderer or custom style
@@ -1510,14 +1592,15 @@ export default function MapView({
           const isCurrentStyleApply = () =>
             !cancelled &&
             styleApplyVersionRef.current === styleApplyVersion &&
-            Boolean(map.getSource(ARC_SOURCE_ID));
+            Boolean(map.getSource(renderSourceId));
 
           const queued = styleApplyQueueRef.current.catch(() => {}).then(async () => {
             if (!isCurrentStyleApply()) return;
             const geom = geometryRef.current ?? normalizeGeometryType((lm as any)?.geometryType) ?? 'polygon';
             const applied = await applyFeatureSourceStyle({
               map,
-              sourceId: ARC_SOURCE_ID,
+              sourceId: renderSourceId,
+              sourceLayer: renderSourceLayer,
               geometry: geom,
               styleMode,
               customStyle,
@@ -1547,7 +1630,7 @@ export default function MapView({
               onMapFeatureClickId,
               featureClickFlagRef
             );
-            updateHighlightStates(map, ARC_SOURCE_ID, hoverFeatureId, selectedFeatureId, prevHoverIdRef.current, prevSelectedIdRef.current);
+            updateHighlightStates(map, renderSourceId, hoverFeatureId, selectedFeatureId, prevHoverIdRef.current, prevSelectedIdRef.current, renderSourceLayer);
             moveOverlayLayersToTop(map);
           });
           styleApplyQueueRef.current = queued.catch(() => {});
@@ -1561,6 +1644,42 @@ export default function MapView({
         let cycleHadFailure = false;
         let stableFeatureCount = 0;
         let snapshotTimer: number | null = null;
+        let renderCycleStartedAt = performance.now();
+        let renderIdleHandler: (() => void) | null = null;
+        let renderTimingFallback: number | null = null;
+        const clearRenderTimingWait = () => {
+          if (renderIdleHandler) {
+            map.off('idle', renderIdleHandler);
+            renderIdleHandler = null;
+          }
+          if (renderTimingFallback != null) {
+            window.clearTimeout(renderTimingFallback);
+            renderTimingFallback = null;
+          }
+        };
+        const beginRenderCycle = () => {
+          clearRenderTimingWait();
+          renderCycleStartedAt = performance.now();
+          onRenderTimingChange?.(null);
+        };
+        const scheduleRenderTiming = () => {
+          if (latestPendingCount > 0) return;
+          clearRenderTimingWait();
+          const startedAt = renderCycleStartedAt;
+          let finished = false;
+          const finish = () => {
+            if (finished || arcSourceRef.current !== arcSource) return;
+            finished = true;
+            clearRenderTimingWait();
+            onRenderTimingChange?.(performance.now() - startedAt);
+          };
+          renderIdleHandler = finish;
+          map.once('idle', finish);
+          // The map may already be idle when the final controller snapshot is
+          // published, so keep a bounded fallback rather than losing timing.
+          renderTimingFallback = window.setTimeout(finish, 5_000);
+          map.triggerRepaint();
+        };
         const flushSourceSnapshot = () => {
           try {
             if (arcSourceRef.current !== arcSource) return;
@@ -1579,10 +1698,18 @@ export default function MapView({
             applySuspectedDuplicateFilter(map, styledLayerIdsRef.current, duplicateFilterBaseRef.current, suspectedDuplicateIdsRef.current, hideSuspectedDuplicatesRef.current);
             applyLegendHighlightFilter(map, legendHighlightFilterRef.current, suspectedDuplicateIdsRef.current, hideSuspectedDuplicatesRef.current);
             const fc: FeatureCollection = { type: 'FeatureCollection', features: feats };
+            if (experimentalTileIndex) {
+              experimentalTileIndex.replaceData(fc);
+              const vectorSource: any = map.getSource(EXPERIMENTAL_TILE_SOURCE_ID);
+              const specification = experimentalTileIndex.sourceSpecification(EXPERIMENTAL_TILE_PROTOCOL, 'controller');
+              vectorSource?.setTiles?.(specification.tiles);
+              refreshExperimentalMetrics();
+            }
             onFeatureCollection?.(fc);
             const b = boundsFromFeatures(feats);
             setLayerBounds(b);
             onDownloadedExtentChange?.(boundsToExtent4326(b));
+            scheduleRenderTiming();
             if (latestPendingCount > 0) {
               setIsLoading(true);
               onStatusChange?.('loading');
@@ -1602,6 +1729,7 @@ export default function MapView({
         const dataCleanup = arcSource.on('data', () => scheduleSourceSnapshot());
         const statusCleanup = arcSource.on('status', (status) => {
           if (arcSourceRef.current !== arcSource) return;
+          if (previousPendingCount === 0 && status.pendingRequests > 0) beginRenderCycle();
           latestPendingCount = status.pendingRequests;
           const cycleSettled = previousPendingCount > 0 && status.pendingRequests === 0;
           // Update before any setPageSize() call, which emits status
@@ -1646,6 +1774,7 @@ export default function MapView({
             window.clearTimeout(snapshotTimer);
             snapshotTimer = null;
           }
+          clearRenderTimingWait();
           dataCleanup();
           statusCleanup();
           errorCleanup();
@@ -1658,6 +1787,7 @@ export default function MapView({
         previousPendingCount = initialStatus.pendingRequests;
         stableFeatureCount = initialStatus.featureCount;
         if (initialStatus.phase === 'loading') {
+          beginRenderCycle();
           setIsLoading(true);
           onStatusChange?.('loading');
         } else if (initialStatus.phase === 'error') {
@@ -1710,6 +1840,13 @@ export default function MapView({
       try { if (map.getLayer(DYNAMIC_LAYER_ID)) map.removeLayer(DYNAMIC_LAYER_ID); } catch {}
       try { if (map.getSource(DYNAMIC_SOURCE_ID)) map.removeSource(DYNAMIC_SOURCE_ID); } catch {}
       try { if (map.getSource(VECTOR_SOURCE_ID)) map.removeSource(VECTOR_SOURCE_ID); } catch {}
+      removeLayersForSource(map, EXPERIMENTAL_TILE_SOURCE_ID);
+      try { if (map.getSource(EXPERIMENTAL_TILE_SOURCE_ID)) map.removeSource(EXPERIMENTAL_TILE_SOURCE_ID); } catch {}
+      if (experimentalProtocolRegistered) {
+        map.off('idle', refreshExperimentalMetrics);
+        try { removeProtocol(EXPERIMENTAL_TILE_PROTOCOL); } catch {}
+      }
+      delete window.__arcgisExperimentalTiles;
       if (ownedArcSource && arcSourceRef.current === ownedArcSource) {
         removeLayersForSource(map, ARC_SOURCE_ID);
         try { ownedArcSource.remove(); } catch {}
@@ -1717,18 +1854,18 @@ export default function MapView({
         arcSourceRef.current = null;
       }
     };
-  }, [serviceUrl, selectedMapLayerId, ready]);
+  }, [serviceUrl, selectedMapLayerId, ready, experimentalTiles]);
 
   React.useEffect(() => {
     if (!ready || !mapRef.current) return;
     try {
       const map = mapRef.current;
-      if (!map.getSource(ARC_SOURCE_ID)) return;
-      ensureLegendHighlightLayers(map, ARC_SOURCE_ID, geometryRef.current);
+      if (!map.getSource(renderSourceId)) return;
+      ensureLegendHighlightLayers(map, renderSourceId, geometryRef.current, renderSourceLayer);
       applyLegendHighlightFilter(map, legendHighlightFilter, suspectedDuplicateIdsRef.current, hideSuspectedDuplicatesRef.current);
       moveOverlayLayersToTop(map);
     } catch {}
-  }, [ready, JSON.stringify(legendHighlightFilter ?? null), hideSuspectedDuplicates]);
+  }, [ready, JSON.stringify(legendHighlightFilter ?? null), hideSuspectedDuplicates, experimentalTiles]);
 
   // Update where without recreating the source
   React.useEffect(() => {
@@ -1753,16 +1890,17 @@ export default function MapView({
     const styleApplyVersion = ++styleApplyVersionRef.current;
     const isCurrentStyleApply = () =>
       styleApplyVersionRef.current === styleApplyVersion &&
-      Boolean(map.getSource(ARC_SOURCE_ID));
+      Boolean(map.getSource(renderSourceId));
     try {
-      const src: any = map.getSource(ARC_SOURCE_ID);
+      const src: any = map.getSource(renderSourceId);
       if (!src) return;
       const lm = layerMetaRef.current;
       const queued = styleApplyQueueRef.current.catch(() => {}).then(async () => {
         if (!isCurrentStyleApply()) return;
         const applied = await applyFeatureSourceStyle({
           map,
-          sourceId: ARC_SOURCE_ID,
+          sourceId: renderSourceId,
+          sourceLayer: renderSourceLayer,
           geometry: geometryRef.current ?? normalizeGeometryType((lm as any)?.geometryType) ?? 'polygon',
           styleMode,
           customStyle,
@@ -1790,7 +1928,7 @@ export default function MapView({
           onMapFeatureClickId,
           featureClickFlagRef
         );
-        updateHighlightStates(map, ARC_SOURCE_ID, hoverFeatureId, selectedFeatureId, prevHoverIdRef.current, prevSelectedIdRef.current);
+        updateHighlightStates(map, renderSourceId, hoverFeatureId, selectedFeatureId, prevHoverIdRef.current, prevSelectedIdRef.current, renderSourceLayer);
         moveOverlayLayersToTop(map);
       });
       styleApplyQueueRef.current = queued.catch(() => {});
@@ -1800,7 +1938,7 @@ export default function MapView({
         styleApplyVersionRef.current += 1;
       }
     };
-  }, [styleMode, JSON.stringify(customStyle || {}), JSON.stringify(attributeStyle?.rule ?? null), ready, hideSuspectedDuplicates]);
+  }, [styleMode, JSON.stringify(customStyle || {}), JSON.stringify(attributeStyle?.rule ?? null), ready, hideSuspectedDuplicates, experimentalTiles]);
 
   // Flash overlay for selected feature
   React.useEffect(() => {
@@ -1901,11 +2039,11 @@ export default function MapView({
   React.useEffect(() => {
     if (!ready || !mapRef.current) return;
     try {
-      updateHighlightStates(mapRef.current, ARC_SOURCE_ID, effectiveHoverId, selectedFeatureId, prevHoverIdRef.current, prevSelectedIdRef.current);
+      updateHighlightStates(mapRef.current, renderSourceId, effectiveHoverId, selectedFeatureId, prevHoverIdRef.current, prevSelectedIdRef.current, renderSourceLayer);
       prevHoverIdRef.current = effectiveHoverId;
       prevSelectedIdRef.current = selectedFeatureId ?? null;
     } catch {}
-  }, [effectiveHoverId, selectedFeatureId, ready]);
+  }, [effectiveHoverId, selectedFeatureId, ready, experimentalTiles]);
 
   const pauseSupported = arcSourceRef.current != null;
 

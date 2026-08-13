@@ -4,8 +4,13 @@ import { approxPrecisionMetersFromZoomLat } from '../src/lib/mapMath';
 import { buildArcgisJsonUrl, canonicalizeArcgisRestUrl, coerceArcgisRestServicesUrl, getRestServiceUrlInfo } from '../src/lib/arcgis';
 import { getLayerDescription, htmlToPlainText, summarizePlainText } from '../src/lib/arcgisDescription';
 import { buildWhereCondition, formatWhereValue, joinWhereCondition } from '../src/lib/whereBuilder';
+import { compareExactIntegers, fieldHasUnsafeIntegers, parseArcGISFeatureId, safeNumericIdAlternative } from '../src/lib/arcgisInteger';
+import { stringifyExactJSON } from '../src/lib/exactJson';
+import { rowsToCSV } from '../src/lib/csv';
+import { featureCollectionToKml, featureCollectionToKmz } from '../src/lib/kml';
 import { buildColorExpression, buildCustomLayers } from '../src/lib/esriStyle';
 import { dedupeFeatures } from '../src/lib/dedupeFeatures';
+import { buildArcGISRequestUrl, normalizeArcGISGeoJSONPage } from '../src/lib/arcgisGeoJSON';
 import {
   describeArcgisRenderer,
   getRenderableArcgisRenderer,
@@ -158,6 +163,11 @@ function test_whereBuilder() {
     'buildWhereCondition: numeric comparison'
   );
   assertEqual(
+    buildWhereCondition('BIG_OID', '=', '9223372036854775807', 'numeric'),
+    'BIG_OID = 9223372036854775807',
+    'buildWhereCondition: preserves exact unquoted bigint literal'
+  );
+  assertEqual(
     joinWhereCondition('1=1', "NAME = 'Main'"),
     "NAME = 'Main'",
     'joinWhereCondition: replaces default query'
@@ -168,6 +178,68 @@ function test_whereBuilder() {
     'joinWhereCondition: appends with AND'
   );
 }
+
+function test_exactArcGISIntegers() {
+  assertEqual(parseArcGISFeatureId('42'), 42, 'parseArcGISFeatureId: canonical safe integer');
+  assertEqual(parseArcGISFeatureId('0042'), '0042', 'parseArcGISFeatureId: noncanonical string stays a string');
+  assertEqual(parseArcGISFeatureId('9007199254740992'), '9007199254740992', 'parseArcGISFeatureId: unsafe ID remains exact');
+  assertEqual(safeNumericIdAlternative('9007199254740992'), undefined, 'selection filter: no rounded unsafe alternative');
+  assertEqual(safeNumericIdAlternative('42'), 42, 'selection filter: safe numeric alternative');
+  assertEqual(compareExactIntegers('9223372036854775807', '9007199254740992'), 1, 'table sort: exact bigint order');
+  assertEqual(
+    fieldHasUnsafeIntegers([{ properties: { BIG_OID: '9223372036854775807' } }], 'BIG_OID'),
+    true,
+    'numeric style: unsafe field detection'
+  );
+
+  const featureCollection = {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      id: '9223372036854775807',
+      properties: { BIG_OID: '9223372036854775807' },
+      geometry: { type: 'Point', coordinates: [0, 0] }
+    }]
+  };
+  const json = stringifyExactJSON(featureCollection);
+  assertEqual(json.includes('"BIG_OID":"9223372036854775807"'), true, 'GeoJSON export: unsafe integer is a quoted exact string');
+  assertEqual(stringifyExactJSON({ value: 9223372036854775807n }), '{"value":"9223372036854775807"}', 'JSON export: native bigint cannot escape');
+  assertEqual(rowsToCSV([{ BIG_OID: '9223372036854775807' }]), 'BIG_OID\n9223372036854775807', 'CSV export: exact decimal digits');
+  assertEqual(featureCollectionToKml(featureCollection).includes('9223372036854775807'), true, 'KML export: exact decimal digits');
+  assertEqual(
+    new TextDecoder().decode(featureCollectionToKmz(featureCollection, {})).includes('9223372036854775807'),
+    true,
+    'KMZ export: stored KML contains exact decimal digits'
+  );
+}
+
+function test_arcgisGeoJSONExperiment() {
+  const queryUrl = buildArcGISRequestUrl(
+    'https://example.com/arcgis/rest/services/demo/MapServer/23/query',
+    {
+      where: '1=1',
+      outFields: '*',
+      resultOffset: '2000',
+      resultRecordCount: '1235'
+    }
+  );
+  const parsed = new URL(queryUrl);
+  assertEqual(parsed.searchParams.get('where'), '1=1', 'real-data experiment: WHERE parameter');
+  assertEqual(parsed.searchParams.get('resultOffset'), '2000', 'real-data experiment: pagination offset');
+  assertEqual(parsed.searchParams.get('resultRecordCount'), '1235', 'real-data experiment: pagination count');
+
+  const unsafeId = '9223372036854775807';
+  const normalized = normalizeArcGISGeoJSONPage({
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      properties: { BIG_OID: unsafeId },
+      geometry: { type: 'Point', coordinates: [0, 0] }
+    }]
+  }, 'BIG_OID');
+  assertEqual(normalized.features[0].id, unsafeId, 'real-data experiment: exact string OID becomes Feature.id');
+}
+
 
 function test_esriStyle() {
   const categorical = buildColorExpression({
@@ -433,11 +505,13 @@ function run() {
   test_arcgisUrlHelpers();
   test_arcgisDescriptions();
   test_whereBuilder();
+  test_exactArcGISIntegers();
+  test_arcgisGeoJSONExperiment();
   test_esriStyle();
   test_arcgisRendererInfo();
   test_kmlStyle();
   const dur = Date.now() - start;
-  console.log(`OK - 9 suites passed in ${dur}ms`);
+  console.log(`OK - 11 suites passed in ${dur}ms`);
 }
 
 run();

@@ -16,8 +16,8 @@ function getGitSha(): string {
 export default defineConfig(({ mode }) => {
   const sourceArcgisEntry =
     mode === 'production'
-      ? path.resolve(__dirname, '../source-arcgis-rest/dist/index.mjs')
-      : path.resolve(__dirname, '../source-arcgis-rest/src/index.ts');
+      ? path.resolve(import.meta.dirname, '../source-arcgis-rest/dist/index.mjs')
+      : path.resolve(import.meta.dirname, '../source-arcgis-rest/src/index.ts');
   const gitSha = getGitSha();
 
   return {
@@ -30,7 +30,7 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       open: true,
       fs: {
-        allow: [path.resolve(__dirname, '..')]
+        allow: [path.resolve(import.meta.dirname, '..')]
       }
     },
     build: {
@@ -39,6 +39,7 @@ export default defineConfig(({ mode }) => {
       rolldownOptions: {
         output: {
           manualChunks(id) {
+            if (id.includes('@maplibre/geojson-vt') || id.includes('@maplibre/vt-pbf')) return 'source-mode-experiment';
             if (id.includes('react-dom') || id.includes('node_modules/react/')) return 'react';
             if (id.includes('maplibre-gl') || id.includes('source-arcgis')) return 'maplibre';
             if (id.includes('@tanstack')) return 'tanstack';
@@ -52,7 +53,7 @@ export default defineConfig(({ mode }) => {
     },
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, 'src'),
+        '@': path.resolve(import.meta.dirname, 'src'),
         '@opendataland/source-arcgis': sourceArcgisEntry
       }
     }

@@ -479,6 +479,7 @@ export default function StyleTab({
                 fields={fields}
                 rule={attributeStyle?.rule}
                 paletteId={attributeStyle?.meta?.paletteId}
+                numericPrecision={attributeStyle?.meta?.numericPrecision}
                 featureCollection={featureCollection}
                 onRuleChange={(rule, meta) => onAttributeStyleChange?.({
                   ...attributeStyle,

@@ -15,7 +15,10 @@ type Props = {
   featureCount?: number | null;
   renderStatus?: 'idle' | 'loading' | 'loaded' | 'error';
   renderedFeatureCount?: number;
+  renderDurationMs?: number | null;
   renderMode?: 'feature' | 'dynamic' | 'fallback_dynamic' | 'image' | 'vector';
+  experimentalTiles?: boolean;
+  onExperimentalTilesChange?: (enabled: boolean) => void;
   onZoomToExtent: (extent: { xmin: number; ymin: number; xmax: number; ymax: number } | null) => void;
   onZoomToLayer?: () => void;
   onFocusFinder?: () => void;
@@ -37,7 +40,10 @@ export default function LayersTab({
   featureCount,
   renderStatus = 'idle',
   renderedFeatureCount = 0,
+  renderDurationMs = null,
   renderMode = 'feature',
+  experimentalTiles = false,
+  onExperimentalTilesChange,
   onZoomToExtent,
   onZoomToLayer,
   onFocusFinder,
@@ -354,10 +360,49 @@ export default function LayersTab({
                 if (!renderedFeatureCount) return 'Rendering features…';
                 const total = typeof featureCount === 'number' && featureCount > 0 ? ` / ${featureCount.toLocaleString()}` : '';
                 const suffix = total ? ' (in view / total)' : ' in view';
-                return `${renderStatus === 'loading' ? 'Rendering' : 'Rendered'} ${renderedFeatureCount.toLocaleString()}${total} features${suffix}`;
+                const timing = renderStatus === 'loaded' && renderDurationMs != null
+                  ? ` in ${Math.round(renderDurationMs).toLocaleString()} ms`
+                  : '';
+                return `${renderStatus === 'loading' ? 'Rendering' : 'Rendered'} ${renderedFeatureCount.toLocaleString()}${total} features${suffix}${timing}`;
               })()}
             </span>
           </div>
+        ) : null}
+
+        {isFeatureRender && onExperimentalTilesChange ? (
+          <details style={{ marginTop: 12 }}>
+            <summary style={{ color: 'var(--muted)', fontSize: 11, cursor: 'pointer', userSelect: 'none' }}>
+              Advanced rendering{experimentalTiles ? ' · experimental tiles on' : ''}
+            </summary>
+            <label
+              title="Render the controller's current FeatureCollection through an in-memory vector-tile source."
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 8,
+                marginTop: 8,
+                padding: '8px 10px',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                background: 'var(--panel-subtle)',
+                cursor: 'pointer'
+              }}
+            >
+              <input
+                type="checkbox"
+                aria-label="Experimental tiles"
+                checked={experimentalTiles}
+                onChange={(event) => onExperimentalTilesChange(event.target.checked)}
+                style={{ marginTop: 2 }}
+              />
+              <span>
+                <span style={{ display: 'block', fontSize: 12, color: 'var(--text)' }}>Use experimental local tiles</span>
+                <span style={{ display: 'block', marginTop: 2, color: 'var(--muted)', fontSize: 11, lineHeight: 1.4 }}>
+                  Compare local MVT rendering with MapLibre’s GeoJSON source.
+                </span>
+              </span>
+            </label>
+          </details>
         ) : null}
       </div>
 

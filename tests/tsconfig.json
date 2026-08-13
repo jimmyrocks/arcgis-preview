@@ -19,6 +19,10 @@
     "../src/lib/arcgisDescription.ts",
     "../src/lib/whereBuilder.ts",
     "../src/lib/mapMath.ts",
+    "../src/lib/arcgisInteger.ts",
+    "../src/lib/exactJson.ts",
+    "../src/lib/csv.ts",
+    "../src/lib/kml.ts",
     "./**/*.ts"
   ],
   "exclude": ["./browser"]

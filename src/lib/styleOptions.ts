@@ -159,6 +159,7 @@ export type AttributeStyleRule =
 
 export type AttributeStyleMeta = {
   paletteId?: string;
+  numericPrecision?: 'approximate';
 };
 
 export type AttributeStyleOptions = {

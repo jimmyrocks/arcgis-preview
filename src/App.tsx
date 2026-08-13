@@ -22,6 +22,7 @@ import { findFeatureById, getFeatureId } from './lib/ids';
 import { getRestServiceUrlInfo } from './lib/arcgis';
 import { buildRecentLayerEntry, pushRecentLayerEntry } from './lib/layerFinderRecent';
 import type { DuplicateFeatureSummary } from './lib/dedupeFeatures';
+import { fieldHasUnsafeIntegers, parseArcGISFeatureId } from './lib/arcgisInteger';
 
 function coerceUrlInput(raw: string): string {
   const cleaned = String(raw || '').trim().replace(/\s+/g, '').replace(/\/$/, '');
@@ -266,8 +267,7 @@ function getInitialSelectedId(): string | number | null {
   try {
     const id = new URLSearchParams(location.search).get('id');
     if (id == null || id === '') return null;
-    const asNum = Number(id);
-    return Number.isFinite(asNum) ? asNum : id;
+    return parseArcGISFeatureId(id);
   } catch { return null; }
 }
 
@@ -449,6 +449,7 @@ function withAttributeMeta(style: AttributeStyleOptions, rawMeta: any): Attribut
   if (!rawMeta || typeof rawMeta !== 'object') return style;
   const meta: NonNullable<AttributeStyleOptions['meta']> = {};
   if (typeof rawMeta.paletteId === 'string' && rawMeta.paletteId) meta.paletteId = rawMeta.paletteId;
+  if (rawMeta.numericPrecision === 'approximate') meta.numericPrecision = 'approximate';
   return Object.keys(meta).length ? { ...style, meta } : style;
 }
 
@@ -485,6 +486,9 @@ export default function App() {
   const [suspectedDuplicateIds, setSuspectedDuplicateIds] = useState<Array<string | number>>([]);
   const [renderMode, setRenderMode] = useState<'feature' | 'dynamic' | 'fallback_dynamic' | 'image' | 'vector'>('feature');
   const [layerOpacity, setLayerOpacity] = useState<number>(1);
+  const [experimentalTiles, setExperimentalTiles] = useState<boolean>(
+    () => new URLSearchParams(location.search).get('experimentalTiles') === '1'
+  );
   const [downloadedExtent, setDownloadedExtent] = useState<Extent | null>(null);
   const [fallbackReason, setFallbackReason] = useState<string | undefined>(undefined);
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | number | null>(getInitialSelectedId());
@@ -496,6 +500,7 @@ export default function App() {
   const [isLoadingService, setIsLoadingService] = useState<boolean>(false);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [renderStatus, setRenderStatus] = useState<'idle' | 'loading' | 'loaded' | 'error'>('idle');
+  const [renderDurationMs, setRenderDurationMs] = useState<number | null>(null);
   const [autoFetchEnabled, setAutoFetchEnabled] = useState<boolean>(true);
   const PERF_WARN_THRESHOLD = 20000;
   const PERF_COUNT_CACHE_MAX = 80;
@@ -892,7 +897,10 @@ export default function App() {
       const stops = classifyNumeric(features, fieldName, palette);
       rule = { kind: 'numeric', field: fieldName, channel: 'color', stops, fallbackColor: palette.colors[0] };
     }
-    setAttributeStyle({ rule, meta: { paletteId } });
+    const numericPrecision = rule.kind === 'numeric' && fieldHasUnsafeIntegers(features, fieldName)
+      ? 'approximate' as const
+      : undefined;
+    setAttributeStyle({ rule, meta: { paletteId, numericPrecision } });
     setStyleMode('attribute');
     setActiveTab('style');
   }
@@ -932,6 +940,9 @@ export default function App() {
         if (activeTab) params.set('tab', activeTab);
         else params.delete('tab');
 
+        if (experimentalTiles) params.set('experimentalTiles', '1');
+        else params.delete('experimentalTiles');
+
         if (styleMode === 'custom' || styleMode === 'attribute') {
           params.set('styleMode', styleMode);
           // Only carry `style` when something actually differs from the
@@ -966,7 +977,7 @@ export default function App() {
     }, delay);
 
     return () => window.clearTimeout(timeoutId);
-  }, [activeTab, basemap, bbox, center, isMobile, legendCollapsed, mapPositionReady, selectedFeatureId, serviceUrl, styleMode, styleOptions, attributeStyle, where, zoom]);
+  }, [activeTab, basemap, bbox, center, experimentalTiles, isMobile, legendCollapsed, mapPositionReady, selectedFeatureId, serviceUrl, styleMode, styleOptions, attributeStyle, where, zoom]);
 
   // Keep header WHERE input mirrored with state
   useEffect(() => { setWhereInput(where || '1=1'); }, [where]);
@@ -1074,6 +1085,7 @@ export default function App() {
     setSelectedFeatureId(null);
     setExportProgress(null);
     setRenderStatus('idle');
+    setRenderDurationMs(null);
     // A new layer should start from the source renderer; the Style tab will show
     // those server values and switch to custom on the first user edit.
     setAttributeStyle({});
@@ -1123,6 +1135,7 @@ export default function App() {
               featureCount={featureCount}
               renderStatus={renderStatus}
               renderedFeatureCount={inViewFeatureCount}
+              renderDurationMs={renderDurationMs}
               renderMode={renderMode}
             />
           </div>
@@ -1370,6 +1383,8 @@ export default function App() {
               where={where}
               forcedFetchPaused={perfCheckPending || !!perfWarning}
               allFeaturesLoaded={allFeaturesLoadedInMemory}
+              experimentalTiles={experimentalTiles}
+              onRenderTimingChange={setRenderDurationMs}
               onManualFetchIntent={dismissPerfWarning}
               onAutoFetchChange={setAutoFetchEnabled}
               basemap={basemap}
@@ -1844,7 +1859,13 @@ export default function App() {
               onExportProgress={setExportProgress}
               renderStatus={renderStatus}
               renderedFeatureCount={inViewFeatureCount}
+              renderDurationMs={renderDurationMs}
               renderMode={renderMode}
+              experimentalTiles={experimentalTiles}
+              onExperimentalTilesChange={(enabled) => {
+                setRenderDurationMs(null);
+                setExperimentalTiles(enabled);
+              }}
               layerOpacity={layerOpacity}
               onLayerOpacityChange={setLayerOpacity}
               onFocusFinder={() => headerFinderRef.current?.focusFinder()}

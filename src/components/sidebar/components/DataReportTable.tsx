@@ -1,4 +1,5 @@
 import React from 'react';
+import { compareExactIntegers } from '../../../lib/arcgisInteger';
 
 type Row = Record<string, any>;
 
@@ -79,6 +80,12 @@ export default function DataReportTable({ data, displayFields, onRowClick, onRow
       if (aValue == null && bValue == null) return 0;
       if (aValue == null) return sortConfig.direction === 'asc' ? 1 : -1;
       if (bValue == null) return sortConfig.direction === 'asc' ? -1 : 1;
+
+      const fieldType = fieldTypeMap.get(sortConfig.key) || '';
+      if (fieldType.includes('biginteger') || fieldType.includes('oid')) {
+        const exact = compareExactIntegers(aValue, bValue);
+        if (exact != null) return sortConfig.direction === 'asc' ? exact : -exact;
+      }
       
       // Handle numbers
       if (typeof aValue === 'number' && typeof bValue === 'number') {
@@ -93,7 +100,7 @@ export default function DataReportTable({ data, displayFields, onRowClick, onRow
       if (aStr > bStr) return sortConfig.direction === 'asc' ? 1 : -1;
       return 0;
     });
-  }, [filteredData, sortConfig]);
+  }, [filteredData, sortConfig, fieldTypeMap]);
 
   const hasData = Array.isArray(data) && data.length > 0 && columns.length > 0;
   const limitedData = React.useMemo(() => {

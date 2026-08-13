@@ -48,11 +48,11 @@ const layerMetadata = {
   }
 };
 
-function geoJson(where: string, offset = 0, count = 1, exceededTransferLimit = false) {
+function geoJson(where: string, offset = 0, count = 1, exceededTransferLimit = false, exactId?: string) {
   return {
     type: 'FeatureCollection',
     features: Array.from({ length: count }, (_, index) => {
-      const id = offset + index + 1;
+      const id = exactId ?? offset + index + 1;
       return {
         type: 'Feature',
         id,
@@ -64,14 +64,14 @@ function geoJson(where: string, offset = 0, count = 1, exceededTransferLimit = f
   };
 }
 
-function arcgisJson(where: string, offset = 0, count = 1, exceededTransferLimit = false) {
+function arcgisJson(where: string, offset = 0, count = 1, exceededTransferLimit = false, exactId?: string) {
   return {
     objectIdFieldName: 'OBJECTID',
     geometryType: 'esriGeometryPoint',
     spatialReference: { wkid: 4326 },
     fields: layerMetadata.fields,
     features: Array.from({ length: count }, (_, index) => {
-      const id = offset + index + 1;
+      const id = exactId ?? offset + index + 1;
       return {
         attributes: { OBJECTID: id, NAME: where.includes('Beta') ? 'Beta' : 'Alpha' },
         geometry: { x: index * 0.001, y: 0, spatialReference: { wkid: 4326 } }
@@ -85,6 +85,8 @@ async function mockArcGIS(page: Page, options: {
   markerDelayMs?: number;
   paginatedTotal?: number;
   laterPageDelayMs?: number;
+  exactId?: string;
+  simpleRenderer?: boolean;
 } = {}) {
   const queryUrls: URL[] = [];
   let markerRequests = 0;
@@ -127,8 +129,8 @@ async function mockArcGIS(page: Page, options: {
           await new Promise((resolve) => setTimeout(resolve, options.laterPageDelayMs));
         }
         const body = format === 'geojson'
-          ? geoJson(url.searchParams.get('where') || '1=1', offset, count, exceeded)
-          : arcgisJson(url.searchParams.get('where') || '1=1', offset, count, exceeded);
+          ? geoJson(url.searchParams.get('where') || '1=1', offset, count, exceeded, options.exactId)
+          : arcgisJson(url.searchParams.get('where') || '1=1', offset, count, exceeded, options.exactId);
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
@@ -138,7 +140,22 @@ async function mockArcGIS(page: Page, options: {
       return;
     }
     const body = /\/FeatureServer\/0\/?$/.test(url.pathname)
-      ? layerMetadata
+      ? (options.simpleRenderer
+          ? {
+              ...layerMetadata,
+              drawingInfo: {
+                renderer: {
+                  type: 'simple',
+                  symbol: {
+                    type: 'esriSMS',
+                    style: 'esriSMSCircle',
+                    color: [37, 99, 235, 255],
+                    size: 10
+                  }
+                }
+              }
+            }
+          : layerMetadata)
       : serviceMetadata;
     await route.fulfill({
       status: 200,
@@ -157,6 +174,87 @@ async function mockArcGIS(page: Page, options: {
   };
 }
 
+test('loads, selects, and round-trips an unsafe object ID exactly', async ({ page }) => {
+  const exactId = '9223372036854775807';
+  await mockArcGIS(page, { exactId, simpleRenderer: true });
+  await page.goto(`/arcgis-preview/?url=${encodeURIComponent(serviceUrl)}&center=0,0&z=5`);
+  await expect(page.locator('.maplibregl-canvas')).toBeVisible();
+  await page.getByRole('tab', { name: 'Data' }).click();
+  await page.getByText(exactId, { exact: true }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get('id')).toBe(exactId);
+});
+
+test('main app experimental tiles toggle renders selectable exact-ID features', async ({ page }) => {
+  const exactId = '9223372036854775807';
+  await mockArcGIS(page, { exactId, simpleRenderer: true });
+  await page.goto(
+    `/arcgis-preview/?url=${encodeURIComponent(serviceUrl)}&center=0,0&z=5`
+  );
+
+  const toggle = page.getByRole('checkbox', { name: 'Experimental tiles' });
+  await page.getByText('Advanced rendering', { exact: true }).click();
+  await expect(toggle).not.toBeChecked();
+  const canvas = page.locator('.maplibregl-canvas');
+  await expect(canvas).toBeVisible();
+  await page.getByRole('tab', { name: 'Data' }).click();
+  await expect(page.getByText(exactId, { exact: true })).toBeVisible();
+
+  // Switch only after the one-record layer is fully cached. A fresh
+  // controller must not inherit the replaced controller's completion pause.
+  await page.getByRole('tab', { name: 'Layer' }).click();
+  await toggle.check();
+  await expect.poll(() => new URL(page.url()).searchParams.get('experimentalTiles')).toBe('1');
+  await expect.poll(() => page.evaluate(() => (window as any).__arcgisExperimentalTiles?.sourceFeatures ?? 0))
+    .toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => (window as any).__arcgisExperimentalTiles?.renderedFeatures ?? 0))
+    .toBeGreaterThan(0);
+
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error('Map canvas has no bounding box');
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await expect.poll(() => new URL(page.url()).searchParams.get('id')).toBe(exactId);
+  await page.keyboard.press('Escape');
+
+  await toggle.uncheck();
+  await expect.poll(() => new URL(page.url()).searchParams.has('experimentalTiles')).toBe(false);
+  await expect(page.getByText(/Rendered 1 \/ 1 features/)).toBeVisible();
+  await toggle.check();
+  await expect.poll(() => new URL(page.url()).searchParams.get('experimentalTiles')).toBe('1');
+  await expect.poll(() => page.evaluate(() => (window as any).__arcgisExperimentalTiles?.sourceFeatures ?? 0))
+    .toBeGreaterThan(0);
+  await expect(page.getByText(/Rendered 1 \/ 1 features.* in [\d,]+ ms/)).toBeVisible();
+});
+
+test('compares GeoJSON and local MVT sources with exact promoted IDs', async ({ page }, testInfo) => {
+  const exactId = '9223372036854775807';
+  const mocked = await mockArcGIS(page, { paginatedTotal: 2500, exactId });
+  await page.goto(
+    `/arcgis-preview/?experiment=geojson-vs-tiles&service=${encodeURIComponent(serviceUrl)}&limit=2500`
+  );
+  await expect(page.getByTestId('geojson-map').locator('.maplibregl-canvas')).toBeVisible();
+  await expect(page.getByTestId('vector-map').locator('.maplibregl-canvas')).toBeVisible();
+  await expect(page.getByTestId('source-mode-metrics')).toBeVisible();
+
+  await expect.poll(() => page.evaluate(() => (window as any).__sourceModeExperiment?.featureCount ?? 0)).toBe(2500);
+  await expect.poll(() => mocked.queryUrls.some((url) => url.searchParams.get('resultOffset') === '2000')).toBe(true);
+  await expect.poll(() => page.evaluate(() => (window as any).__sourceModeExperiment?.vectorRequests ?? 0)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => (window as any).__sourceModeExperiment?.vectorGeneratedBytes ?? 0)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => (window as any).__sourceModeExperiment?.geojsonRendered ?? 0)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => (window as any).__sourceModeExperiment?.vectorRendered ?? 0)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => (window as any).__sourceModeExperiment?.promotedSampleId ?? null))
+    .toBe(exactId);
+
+  const before = await page.evaluate(() => (window as any).__sourceModeExperiment?.vectorRequests ?? 0);
+  await page.getByTestId('vector-map').getByRole('button', { name: 'Zoom in' }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__sourceModeExperiment?.vectorRequests ?? 0)).toBeGreaterThan(before);
+  const metrics = await page.evaluate(() => (window as any).__sourceModeExperiment);
+  console.log('SOURCE_MODE_METRICS', JSON.stringify(metrics));
+  await testInfo.attach('source-mode-metrics.json', {
+    body: JSON.stringify(metrics, null, 2),
+    contentType: 'application/json',
+  });
+});
+
 test('built preview loads both workers and preserves controller interactions', async ({ page }) => {
   const mocked = await mockArcGIS(page);
   const workerAssets = new Set<string>();
@@ -174,7 +272,9 @@ test('built preview loads both workers and preserves controller interactions', a
   await expect.poll(() => [...workerAssets].some((url) => url.includes('maplibre-gl-worker'))).toBe(true);
   await expect.poll(() => [...workerAssets].some((url) => url.includes('arcgisWorker'))).toBe(true);
   await expect.poll(mocked.markerRequests).toBeGreaterThan(0);
-  expect(mocked.queryUrls.some((url) => url.searchParams.get('where') === "NAME = 'Alpha'")).toBe(true);
+  await expect.poll(() =>
+    mocked.queryUrls.some((url) => url.searchParams.get('where') === "NAME = 'Alpha'")
+  ).toBe(true);
 
   const canvas = page.locator('.maplibregl-canvas');
   await expect(page.locator('.fetch-ctrl-count')).toBeVisible();
@@ -271,14 +371,21 @@ test('large paginated layers publish a first batch before pagination completes',
 
 test('representative standalone ESM demo initializes on MapLibre 6', async ({ page }) => {
   const maplibreRoot = path.resolve(process.cwd(), 'node_modules/maplibre-gl/dist');
-  await page.route('https://unpkg.com/maplibre-gl@6.0.0/dist/maplibre-gl.mjs', (route) =>
+  await page.route('https://unpkg.com/maplibre-gl@6.3.0/dist/maplibre-gl.mjs', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'text/javascript',
       body: fs.readFileSync(path.join(maplibreRoot, 'maplibre-gl.mjs'))
     })
   );
-  await page.route('https://unpkg.com/maplibre-gl@6.0.0/dist/maplibre-gl.css', (route) =>
+  await page.route('https://unpkg.com/maplibre-gl@6.3.0/dist/maplibre-gl-shared.mjs', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'text/javascript',
+      body: fs.readFileSync(path.join(maplibreRoot, 'maplibre-gl-shared.mjs'))
+    })
+  );
+  await page.route('https://unpkg.com/maplibre-gl@6.3.0/dist/maplibre-gl.css', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'text/css',
