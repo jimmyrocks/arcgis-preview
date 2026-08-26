@@ -9,13 +9,50 @@ export type ResolvedLayer = {
   type: 'feature' | 'dynamic' | 'image' | 'vector' | 'unknown';
   url: string | null;
   serviceRootUrl: string | null;
+  serviceType?: 'MapServer' | 'FeatureServer' | 'ImageServer' | 'VectorTileServer' | null;
   layerId?: number;
 };
 
+export type MapServerRendering = 'features' | 'published';
+
+export type ArcGISLegendItem = {
+  label?: string;
+  url?: string;
+  imageData?: string;
+  contentType?: string;
+  width?: number;
+  height?: number;
+};
+
+export type ArcGISLegendLayer = {
+  layerId: number;
+  layerName?: string;
+  layerType?: string;
+  minScale?: number;
+  maxScale?: number;
+  legend?: ArcGISLegendItem[];
+};
+
+export type ArcGISLegendResponse = {
+  layers?: ArcGISLegendLayer[];
+};
+
+export function isQueryableMapLayer(meta: MapServiceLayerInfo | null | undefined): boolean {
+  if (!meta) return false;
+  const layerType = String((meta as any).type || '').toLowerCase();
+  const geometryType = String((meta as any).geometryType || '').toLowerCase();
+  const capabilities = String((meta as any).capabilities || '').toLowerCase();
+  const hasGeometry = !!geometryType && geometryType !== 'esrigeometrynone';
+  const isRasterLike = layerType.includes('raster') || layerType.includes('image') || layerType.includes('mosaic');
+  const isGroupLayer = layerType.includes('group');
+  const hasQueryCapability = !capabilities || capabilities.includes('query');
+  return hasGeometry && !isRasterLike && !isGroupLayer && hasQueryCapability;
+}
+
 export function resolveEsriLayer(serviceUrl: string, selectedMapLayerId?: number): ResolvedLayer {
   const trimmed = String(serviceUrl || '').trim();
-  if (!trimmed) return { type: 'unknown', url: null, serviceRootUrl: null };
-  try { new URL(trimmed); } catch { return { type: 'unknown', url: null, serviceRootUrl: null }; }
+  if (!trimmed) return { type: 'unknown', url: null, serviceRootUrl: null, serviceType: null };
+  try { new URL(trimmed); } catch { return { type: 'unknown', url: null, serviceRootUrl: null, serviceType: null }; }
   log.debug('[resolveEsriLayer] input', { serviceUrl: trimmed, selectedMapLayerId });
   try {
     const info = getRestServiceUrlInfo(trimmed);
@@ -23,31 +60,31 @@ export function resolveEsriLayer(serviceUrl: string, selectedMapLayerId?: number
     // MapServer and FeatureServer handling
     if (info.isMapServer || info.isFeatureServer) {
       if (info.isLayer) {
-        return { type: 'feature', url: info.layerUrl!, serviceRootUrl: info.serviceUrl!, layerId: info.layerId };
+        return { type: 'feature', url: info.layerUrl!, serviceRootUrl: info.serviceUrl!, serviceType: info.serviceType as 'MapServer' | 'FeatureServer', layerId: info.layerId };
       }
       if (typeof selectedMapLayerId === 'number') {
-        return { type: 'feature', url: `${info.serviceUrl}/${selectedMapLayerId}`, serviceRootUrl: info.serviceUrl!, layerId: selectedMapLayerId };
+        return { type: 'feature', url: `${info.serviceUrl}/${selectedMapLayerId}`, serviceRootUrl: info.serviceUrl!, serviceType: info.serviceType as 'MapServer' | 'FeatureServer', layerId: selectedMapLayerId };
       }
       if (info.isMapServer) {
-        return { type: 'dynamic', url: info.serviceUrl!, serviceRootUrl: info.serviceUrl! };
+        return { type: 'dynamic', url: info.serviceUrl!, serviceRootUrl: info.serviceUrl!, serviceType: 'MapServer' };
       }
       // FeatureServer service root: default to layer 0 as feature layer
       if (info.isFeatureServer) {
-        return { type: 'feature', url: `${info.serviceUrl}/0`, serviceRootUrl: info.serviceUrl!, layerId: 0 };
+        return { type: 'feature', url: `${info.serviceUrl}/0`, serviceRootUrl: info.serviceUrl!, serviceType: 'FeatureServer', layerId: 0 };
       }
     }
     if (info.serviceType === 'ImageServer' && info.serviceUrl) {
-      return { type: 'image', url: info.serviceUrl, serviceRootUrl: info.serviceUrl };
+      return { type: 'image', url: info.serviceUrl, serviceRootUrl: info.serviceUrl, serviceType: 'ImageServer' };
     }
     if (info.serviceType === 'VectorTileServer' && info.serviceUrl) {
-      return { type: 'vector', url: info.serviceUrl, serviceRootUrl: info.serviceUrl };
+      return { type: 'vector', url: info.serviceUrl, serviceRootUrl: info.serviceUrl, serviceType: 'VectorTileServer' };
     }
-    return { type: 'unknown', url: null, serviceRootUrl: null };
+    return { type: 'unknown', url: null, serviceRootUrl: null, serviceType: info.serviceType as any };
   } catch(e) {
     if (trimmed.toLowerCase().includes('/rest/services')) {
       log.error('Failed to resolve ArcGIS URL', e);
     }
-    return { type: 'unknown', url: null, serviceRootUrl: null };
+    return { type: 'unknown', url: null, serviceRootUrl: null, serviceType: null };
   }
 }
 
@@ -61,6 +98,26 @@ export async function fetchLayerMetadata(layerUrl: string, opts?: { signal?: Abo
   const url = new URL(layerUrl);
   url.searchParams.set('f', 'json');
   return fetchJsonCached<MapServiceLayerInfo>(url.toString(), { signal: opts?.signal, ttlMs: opts?.ttlMs ?? CACHE_TTLS.metadataMs });
+}
+
+export async function fetchMapServerLegend(serviceRootUrl: string, opts?: { signal?: AbortSignal; ttlMs?: number }): Promise<ArcGISLegendResponse> {
+  const url = new URL(`${serviceRootUrl.replace(/\/+$/, '')}/legend`);
+  url.searchParams.set('f', 'json');
+  return fetchJsonCached<ArcGISLegendResponse>(url.toString(), { signal: opts?.signal, ttlMs: opts?.ttlMs ?? CACHE_TTLS.metadataMs });
+}
+
+export function selectPublishedLegendLayers(
+  response: ArcGISLegendResponse | null | undefined,
+  selectedLayerId: number | undefined,
+  visibleLayerIds?: number[]
+): ArcGISLegendLayer[] {
+  const layers = Array.isArray(response?.layers) ? response.layers : [];
+  const allowed = Array.isArray(visibleLayerIds) ? new Set(visibleLayerIds) : null;
+  return layers.filter((layer) => {
+    if (!Array.isArray(layer?.legend) || layer.legend.length === 0) return false;
+    if (allowed) return allowed.has(layer.layerId);
+    return selectedLayerId == null || layer.layerId === selectedLayerId;
+  });
 }
 
 export async function fetchFeatureCount(layerUrl: string, where?: string, opts?: { signal?: AbortSignal }): Promise<number> {
@@ -221,6 +278,14 @@ async function fetchJsonCached<T = any>(url: string, opt?: { signal?: AbortSigna
     }
     if (!res.ok) throw new Error(`Failed to fetch: ${res.status}`);
     const data = parseArcGISJSON<T>(await res.text());
+    const arcgisError = (data as any)?.error;
+    if (arcgisError) {
+      const message = String(arcgisError.message || arcgisError.details?.join?.(' ') || 'ArcGIS request failed');
+      const error = new Error(message) as Error & { status?: number };
+      const code = Number(arcgisError.code);
+      if (Number.isFinite(code)) error.status = code;
+      throw error;
+    }
     const etag = res.headers.get('ETag');
     const lastModified = res.headers.get('Last-Modified');
     setJsonCacheEntry(key, { data, etag, lastModified, timestamp: now });

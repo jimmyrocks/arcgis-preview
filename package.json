@@ -24,7 +24,7 @@
     "@opendataland/source-arcgis": "file:../source-arcgis-rest",
     "@types/geojson": "^7946.0.16",
     "@uiw/react-codemirror": "^4.25.11",
-    "maplibre-gl": "6.4.1",
+    "maplibre-gl": "6.6.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-toastify": "^11.1.0"

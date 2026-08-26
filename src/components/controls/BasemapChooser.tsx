@@ -1,17 +1,11 @@
 import React from 'react';
+import {
+  BASEMAP_CHOICES,
+  type BasemapKey,
+  type BasemapSelection
+} from '../../lib/basemaps';
 
-type BaseKey =
-  | 'carto_positron'
-  | 'usgs_topo'
-  | 'usgs_imagery_topo'
-  | 'usgs_imagery'
-  | 'osm'
-  | 'carto_dark'
-  | 'carto_voyager'
-  | 'esri_worldimagery'
-  | 'opentopomap';
-
-export default function BasemapChooser({ value, onChange }: { value: BaseKey | any; onChange?: (b: any) => void }) {
+export default function BasemapChooser({ value, onChange }: { value: BasemapSelection; onChange?: (b: BasemapSelection) => void }) {
   const [open, setOpen] = React.useState(false);
   return (
     <div className="basemap-chooser">
@@ -25,9 +19,9 @@ export default function BasemapChooser({ value, onChange }: { value: BaseKey | a
   );
 }
 
-function ChooserUI({ value, open, onToggle, onChange }: { value: BaseKey | any; open: boolean; onToggle: () => void; onChange: (b: any) => void }) {
+function ChooserUI({ value, open, onToggle, onChange }: { value: BasemapSelection; open: boolean; onToggle: () => void; onChange: (b: BasemapSelection) => void }) {
   const cfg = getBasemaps();
-  const active = typeof value === 'string' ? cfg[value as BaseKey] : undefined;
+  const active = typeof value === 'string' ? cfg[value as BasemapKey] : undefined;
   const label = active?.label || (typeof value === 'object' ? 'Custom' : 'Basemap');
   const thumb = active?.thumb || (typeof value === 'object' && typeof value.url === 'string' ? guessThumb(value.url) : undefined);
   return (
@@ -40,7 +34,7 @@ function ChooserUI({ value, open, onToggle, onChange }: { value: BaseKey | any; 
         <div className="bm-panel" role="menu">
           {Object.entries(cfg).map(([k, v]) => (
             <button key={k} className={`bm-option${value === k ? ' is-active' : ''}`} role="menuitemradio" aria-checked={value === k}
-              onClick={() => onChange(k as BaseKey)} title={v.label}>
+              onClick={() => onChange(k as BasemapKey)} title={v.label}>
               <img src={v.thumb} alt="" width={48} height={48} />
               <span>{v.label}</span>
             </button>
@@ -55,18 +49,10 @@ function ChooserUI({ value, open, onToggle, onChange }: { value: BaseKey | any; 
   );
 }
 
-function getBasemaps(): Record<BaseKey, { label: string; thumb: string }> {
-  return {
-    carto_positron: { label: 'CARTO Positron', thumb: 'https://a.basemaps.cartocdn.com/light_all/3/2/3.png' },
-    usgs_topo: { label: 'USGS Topo', thumb: 'https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/3/3/2' },
-    usgs_imagery_topo: { label: 'USGS Imagery Topo', thumb: 'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryTopo/MapServer/tile/3/3/2' },
-    usgs_imagery: { label: 'USGS Imagery', thumb: 'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/3/3/2' },
-    osm: { label: 'OpenStreetMap', thumb: 'https://a.tile.openstreetmap.org/3/2/3.png' },
-    carto_dark: { label: 'CARTO Dark', thumb: 'https://a.basemaps.cartocdn.com/dark_all/3/2/3.png' },
-    carto_voyager: { label: 'CARTO Voyager', thumb: 'https://a.basemaps.cartocdn.com/rastertiles/voyager/3/2/3.png' },
-    esri_worldimagery: { label: 'Esri World Imagery', thumb: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/3/3/2' },
-    opentopomap: { label: 'OpenTopoMap', thumb: 'https://a.tile.opentopomap.org/3/2/3.png' },
-  };
+function getBasemaps(): Record<BasemapKey, { label: string; thumb: string }> {
+  return Object.fromEntries(
+    BASEMAP_CHOICES.map(({ key, label, thumb }) => [key, { label, thumb }])
+  ) as Record<BasemapKey, { label: string; thumb: string }>;
 }
 
 function guessThumb(urlTemplate: string): string | undefined {

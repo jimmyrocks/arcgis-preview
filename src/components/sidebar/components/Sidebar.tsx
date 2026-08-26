@@ -11,6 +11,7 @@ import StyleTab from '../tabs/StyleTab';
 import type { GeometryStyleOptions, AttributeStyleOptions, StyleMode } from '../../../lib/styleOptions';
 import { GITHUB_ISSUES_URL, GITHUB_FORK_URL, GITHUB_REPO_URL } from '../../../lib/links';
 import { buildInfo } from '../../../lib/buildInfo';
+import type { MapServerRendering } from '../../../lib/esriLayer';
 
 function ContributeFooter() {
   const [open, setOpen] = React.useState(false);
@@ -107,6 +108,8 @@ export type SidebarProps = {
   renderedFeatureCount?: number;
   renderDurationMs?: number | null;
   renderMode?: 'feature' | 'dynamic' | 'fallback_dynamic' | 'image' | 'vector';
+  mapServerRendering?: MapServerRendering;
+  onMapServerRenderingChange?: (mode: MapServerRendering) => void;
   experimentalTiles?: boolean;
   onExperimentalTilesChange?: (enabled: boolean) => void;
   layerOpacity?: number;
@@ -117,7 +120,7 @@ export type SidebarProps = {
   onBrowseService?: (serviceKey: string) => void;
 };
 
-export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent, onZoomToLayer, serviceMeta, layerMeta, isGroupLayer = false, featureCount, whereValue, whereDraftValue, onEditWhere, onCommitWhere, onClearWhere, fallbackReason, layerDataRows, featureCollection, styleFeatureCollection, downloadedExtent, selectedFeatureId, onFlashFeature, onZoomToFeature, onClearSelection, onRowHover, onRowClick, onRowDoubleClick, highlightId, disableQuery = false, disableData = false, disableDownload = false, disableStyle = false, zoom, bbox, center, activeTabName, onTabChange, styleMode = 'server', styleOptions = {}, onStyleModeChange, onStyleOptionsChange, attributeStyle, onAttributeStyleChange, onStyleByField, isLoadingService = false, exportProgress = null, onExportProgress, renderStatus = 'idle', renderedFeatureCount = 0, renderDurationMs = null, renderMode = 'feature', experimentalTiles = false, onExperimentalTilesChange, layerOpacity = 1, onLayerOpacityChange, onFocusFinder, onBrowseServer, onBrowseFolder, onBrowseService }: SidebarProps) {
+export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent, onZoomToLayer, serviceMeta, layerMeta, isGroupLayer = false, featureCount, whereValue, whereDraftValue, onEditWhere, onCommitWhere, onClearWhere, fallbackReason, layerDataRows, featureCollection, styleFeatureCollection, downloadedExtent, selectedFeatureId, onFlashFeature, onZoomToFeature, onClearSelection, onRowHover, onRowClick, onRowDoubleClick, highlightId, disableQuery = false, disableData = false, disableDownload = false, disableStyle = false, zoom, bbox, center, activeTabName, onTabChange, styleMode = 'server', styleOptions = {}, onStyleModeChange, onStyleOptionsChange, attributeStyle, onAttributeStyleChange, onStyleByField, isLoadingService = false, exportProgress = null, onExportProgress, renderStatus = 'idle', renderedFeatureCount = 0, renderDurationMs = null, renderMode = 'feature', mapServerRendering = 'features', onMapServerRenderingChange, experimentalTiles = false, onExperimentalTilesChange, layerOpacity = 1, onLayerOpacityChange, onFocusFinder, onBrowseServer, onBrowseFolder, onBrowseService }: SidebarProps) {
   const [activeTab, setActiveTab] = useState<'select' | 'details' | 'query' | 'data' | 'download' | 'style'>(activeTabName || 'select');
   React.useEffect(() => {
     if (!activeTabName) return;
@@ -129,6 +132,7 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
   const styleDisabledTitle = isGroupLayer
     ? 'Not available for Group Layers'
     : 'Feature Layers and raster imagery previews only';
+  const canOfferInteractiveSwitch = mapServerRendering === 'published' && !!onMapServerRenderingChange;
   const columnAliases = React.useMemo(() => {
     const map: Record<string, string> = {};
     const fields = layerMeta?.fields || [];
@@ -164,43 +168,70 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
 
   // Ensure disabled tabs cannot remain active
   React.useEffect(() => {
-    if ((activeTab === 'query' && disableQuery) || (activeTab === 'data' && disableData) || (activeTab === 'download' && disableDownload) || (activeTab === 'style' && disableStyle)) {
+    if (
+      (activeTab === 'query' && disableQuery && !canOfferInteractiveSwitch) ||
+      (activeTab === 'data' && disableData && !canOfferInteractiveSwitch) ||
+      (activeTab === 'download' && disableDownload && !canOfferInteractiveSwitch) ||
+      (activeTab === 'style' && disableStyle)
+    ) {
       setActiveTab('select');
+      onTabChange?.('select');
     }
-  }, [activeTab, disableQuery, disableData, disableDownload, disableStyle]);
+  }, [activeTab, canOfferInteractiveSwitch, disableQuery, disableData, disableDownload, disableStyle, onTabChange]);
+
+  const selectTab = (tab: 'select' | 'details' | 'query' | 'data' | 'download' | 'style') => {
+    setActiveTab(tab);
+    onTabChange?.(tab);
+  };
+
+  const handleTabListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const tabs = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .filter((tab) => tab.getAttribute('aria-disabled') !== 'true');
+    if (!tabs.length) return;
+    const current = tabs.indexOf(document.activeElement as HTMLButtonElement);
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? tabs.length - 1
+        : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    event.preventDefault();
+    tabs[nextIndex]?.focus();
+    tabs[nextIndex]?.click();
+  };
 
   return (
     <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      <div className="tabs" role="tablist" aria-label="Sidebar Tabs" style={{ display: 'flex', gap: 0, marginBottom: 0 }}>
-        <TabButton name="select" active={activeTab === 'select'} onClick={() => { setActiveTab('select'); onTabChange?.('select'); }}>Layer</TabButton>
-        <TabButton name="details" active={activeTab === 'details'} onClick={() => { setActiveTab('details'); onTabChange?.('details'); }}>Details</TabButton>
+      <div className="tabs" role="tablist" aria-label="Sidebar Tabs" onKeyDown={handleTabListKeyDown} style={{ display: 'flex', gap: 0, marginBottom: 0 }}>
+        <TabButton name="select" active={activeTab === 'select'} onClick={() => selectTab('select')}>Layer</TabButton>
+        <TabButton name="details" active={activeTab === 'details'} onClick={() => selectTab('details')}>Details</TabButton>
         <TabButton name="style" active={activeTab === 'style'} disabled={disableStyle}
           onClick={() => {
             if (disableStyle) { try { toast(styleDisabledMessage); } catch {} }
-            else { setActiveTab('style'); onTabChange?.('style'); }
+            else selectTab('style');
           }}
           title={disableStyle ? styleDisabledTitle : undefined}
         >Style</TabButton>
-        <TabButton name="query" active={activeTab === 'query'} disabled={disableQuery}
+        <TabButton name="query" active={activeTab === 'query'} disabled={disableQuery && !canOfferInteractiveSwitch} restricted={disableQuery && canOfferInteractiveSwitch}
           onClick={() => {
-            if (disableQuery) { try { toast(isGroupLayer ? 'Query is not available for Group Layers' : 'Query is only available for Feature Layers'); } catch {} }
-            else { setActiveTab('query'); onTabChange?.('query'); }
+            if (disableQuery && !canOfferInteractiveSwitch) { try { toast(isGroupLayer ? 'Query is not available for Group Layers' : 'Query is only available for Feature Layers'); } catch {} }
+            else selectTab('query');
           }}
-          title={disableQuery ? (isGroupLayer ? 'Not available for Group Layers' : 'Only for Feature Layers') : undefined}
+          title={disableQuery ? (canOfferInteractiveSwitch ? 'Available in Interactive features' : (isGroupLayer ? 'Not available for Group Layers' : 'Only for Feature Layers')) : undefined}
         >Query</TabButton>
-        <TabButton name="data" active={activeTab === 'data'} disabled={disableData}
+        <TabButton name="data" active={activeTab === 'data'} disabled={disableData && !canOfferInteractiveSwitch} restricted={disableData && canOfferInteractiveSwitch}
           onClick={() => {
-            if (disableData) { try { toast(isGroupLayer ? 'Data is not available for Group Layers' : 'Data is only available for Feature Layers'); } catch {} }
-            else { setActiveTab('data'); onTabChange?.('data'); }
+            if (disableData && !canOfferInteractiveSwitch) { try { toast(isGroupLayer ? 'Data is not available for Group Layers' : 'Data is only available for Feature Layers'); } catch {} }
+            else selectTab('data');
           }}
-          title={disableData ? (isGroupLayer ? 'Not available for Group Layers' : 'Only for Feature Layers') : undefined}
+          title={disableData ? (canOfferInteractiveSwitch ? 'Available in Interactive features' : (isGroupLayer ? 'Not available for Group Layers' : 'Only for Feature Layers')) : undefined}
         >Data</TabButton>
-        <TabButton name="download" active={activeTab === 'download'} disabled={disableDownload}
+        <TabButton name="download" active={activeTab === 'download'} disabled={disableDownload && !canOfferInteractiveSwitch} restricted={disableDownload && canOfferInteractiveSwitch}
           onClick={() => {
-            if (disableDownload) { try { toast(isGroupLayer ? 'Download is not available for Group Layers' : 'Download is only available for Feature Layers'); } catch {} }
-            else { setActiveTab('download'); onTabChange?.('download'); }
+            if (disableDownload && !canOfferInteractiveSwitch) { try { toast(isGroupLayer ? 'Download is not available for Group Layers' : 'Download is only available for Feature Layers'); } catch {} }
+            else selectTab('download');
           }}
-          title={disableDownload ? (isGroupLayer ? 'Not available for Group Layers' : 'Only for Feature Layers') : undefined}
+          title={disableDownload ? (canOfferInteractiveSwitch ? 'Available in Interactive features' : (isGroupLayer ? 'Not available for Group Layers' : 'Only for Feature Layers')) : undefined}
         >Download</TabButton>
       </div>
       <div className="tab-panels" style={{ flex: '1 1 0%', minHeight: 0, minWidth: 0, overflowY: 'auto', overflowX: 'hidden' }}>
@@ -223,6 +254,8 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
             renderedFeatureCount={renderedFeatureCount}
             renderDurationMs={renderDurationMs}
             renderMode={renderMode}
+            mapServerRendering={mapServerRendering}
+            onMapServerRenderingChange={onMapServerRenderingChange}
             experimentalTiles={experimentalTiles}
             onExperimentalTilesChange={onExperimentalTilesChange}
             onFocusFinder={onFocusFinder}
@@ -271,7 +304,9 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
         ) : null}
         {activeTab === 'query' ? (
           <section id="panel-query" role="tabpanel" aria-labelledby="tab-query">
-          <QueryTab
+          {disableQuery && canOfferInteractiveSwitch ? (
+            <InteractiveModePrompt toolName="Query" onSwitch={() => onMapServerRenderingChange?.('features')} />
+          ) : <QueryTab
             fields={layerMeta?.fields || []}
             appliedWhere={whereValue}
             whereDraft={whereDraftValue}
@@ -287,12 +322,14 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
                 return '';
               } catch { return ''; }
             })()}
-          />
+          />}
           </section>
         ) : null}
         {activeTab === 'data' ? (
           <section id="panel-data" role="tabpanel" aria-labelledby="tab-data" style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <DataTab
+            {disableData && canOfferInteractiveSwitch ? (
+              <InteractiveModePrompt toolName="Data" onSwitch={() => onMapServerRenderingChange?.('features')} />
+            ) : <DataTab
               datasetName={layerMeta?.name || 'features'}
               columnAliases={columnAliases}
               featureCollection={featureCollection}
@@ -303,12 +340,14 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
               fields={layerMeta?.fields || []}
               layerTotal={typeof featureCount === 'number' ? featureCount : null}
               onStyleByField={onStyleByField}
-            />
+            />}
           </section>
         ) : null}
         {activeTab === 'download' ? (
           <section id="panel-download" role="tabpanel" aria-labelledby="tab-download">
-          <DownloadTab
+          {disableDownload && canOfferInteractiveSwitch ? (
+            <InteractiveModePrompt toolName="Download" onSwitch={() => onMapServerRenderingChange?.('features')} />
+          ) : <DownloadTab
             rows={Array.isArray(layerDataRows) ? layerDataRows : []}
             datasetName={layerMeta?.name || 'features'}
             featureCollection={featureCollection}
@@ -323,7 +362,7 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
             layerTotal={typeof featureCount === 'number' ? featureCount : undefined}
             renderer={(layerMeta as any)?.drawingInfo?.renderer}
             onExportProgress={onExportProgress}
-          />
+          />}
           </section>
         ) : null}
       </div>
@@ -342,7 +381,20 @@ export default function Sidebar({ serviceUrl, onSelectServiceUrl, onZoomToExtent
   );
 }
 
-function TabButton({ name, active, onClick, children, disabled = false, title }: { name: 'select' | 'details' | 'style' | 'query' | 'data' | 'download'; active: boolean; onClick: () => void; children: React.ReactNode; disabled?: boolean; title?: string }) {
+function InteractiveModePrompt({ toolName, onSwitch }: { toolName: string; onSwitch: () => void }) {
+  return (
+    <div className="interactive-mode-prompt" role="note">
+      <div className="interactive-mode-prompt-icon" aria-hidden>⌁</div>
+      <div>
+        <h2>{toolName} works with interactive features</h2>
+        <p>The published map is made of pixels. Switch rendering modes to work with individual records; your layer, filter, and map position will stay in place.</p>
+        <button type="button" className="u-btn u-btn-primary" onClick={onSwitch}>Switch to Interactive features</button>
+      </div>
+    </div>
+  );
+}
+
+function TabButton({ name, active, onClick, children, disabled = false, restricted = false, title }: { name: 'select' | 'details' | 'style' | 'query' | 'data' | 'download'; active: boolean; onClick: () => void; children: React.ReactNode; disabled?: boolean; restricted?: boolean; title?: string }) {
   const [isCoarse, setIsCoarse] = React.useState<boolean>(() => {
     try { return window.matchMedia('(pointer: coarse)').matches; } catch { return false; }
   });
@@ -365,7 +417,8 @@ function TabButton({ name, active, onClick, children, disabled = false, title }:
       aria-controls={`panel-${name}`}
       aria-selected={active}
       aria-disabled={disabled}
-      className={`tab-button${active ? ' is-active' : ''}`}
+      tabIndex={active ? 0 : -1}
+      className={`tab-button${active ? ' is-active' : ''}${restricted ? ' is-restricted' : ''}`}
       style={{
         padding: isCoarse ? '10px 14px' : '8px 12px',
         margin: 0,
@@ -377,6 +430,10 @@ function TabButton({ name, active, onClick, children, disabled = false, title }:
         color: disabled ? 'var(--muted)' : (active ? 'var(--text)' : 'var(--muted)'),
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.5 : 1,
-      }}><span className="tab-label">{children}</span></button>
+      }}><span className="tab-label">
+        {children}
+        {restricted ? <span className="tab-mode-indicator" aria-hidden>•</span> : null}
+        {restricted ? <span className="visually-hidden"> — available in Interactive features</span> : null}
+      </span></button>
   );
 }

@@ -23,6 +23,10 @@ import {
   evaluateRendererSymbol,
   symbolToKmlStyleXml
 } from '../src/lib/kmlStyle';
+import { getBasemapConfig, normalizeBasemapKey } from '../src/lib/basemaps';
+import { isQueryableMapLayer, selectPublishedLegendLayers } from '../src/lib/esriLayer';
+import { isTrivialWhere } from '../src/lib/whereUtils';
+import { classifyMapRenderIssue } from '../src/lib/mapRenderIssue';
 
 function assertEqual(actual: any, expected: any, message: string) {
   if (actual !== expected) {
@@ -69,6 +73,107 @@ function test_mapMath() {
     const exp = expectedApprox(c.z, c.lat);
     assertEqual(got, exp, `approxPrecisionMetersFromZoomLat: ${c.name}`);
   }
+}
+
+function test_basemaps() {
+  assertEqual(
+    normalizeBasemapKey('carto_positron'),
+    'openfreemap_positron',
+    'basemap: legacy Positron links use OpenFreeMap'
+  );
+  assertEqual(
+    normalizeBasemapKey('carto_dark'),
+    'openfreemap_dark',
+    'basemap: legacy dark links use OpenFreeMap'
+  );
+  assertEqual(
+    normalizeBasemapKey('carto_voyager'),
+    'openfreemap_liberty',
+    'basemap: legacy Voyager links use OpenFreeMap Liberty'
+  );
+  const positron = getBasemapConfig('openfreemap_positron');
+  assertEqual(positron.type, 'openfreemap', 'basemap: Positron uses vector style config');
+  assertEqual(
+    positron.type === 'openfreemap' ? positron.styleUrl : '',
+    'https://tiles.openfreemap.org/styles/positron',
+    'basemap: Positron uses the key-free OpenFreeMap style'
+  );
+}
+
+function test_mapServerRenderingCapabilities() {
+  assertEqual(
+    isQueryableMapLayer({
+      type: 'Feature Layer',
+      geometryType: 'esriGeometryPoint',
+      capabilities: 'Map,Query'
+    } as any),
+    true,
+    'map rendering: queryable feature layer offers both modes'
+  );
+  assertEqual(
+    isQueryableMapLayer({
+      type: 'Group Layer',
+      geometryType: 'esriGeometryPoint',
+      capabilities: 'Map,Query'
+    } as any),
+    false,
+    'map rendering: group layer is published-map only'
+  );
+  assertEqual(
+    isQueryableMapLayer({
+      type: 'Raster Layer',
+      geometryType: 'esriGeometryPoint',
+      capabilities: 'Map,Query'
+    } as any),
+    false,
+    'map rendering: raster layer is published-map only'
+  );
+  assertEqual(
+    isQueryableMapLayer({
+      type: 'Feature Layer',
+      geometryType: 'esriGeometryPoint',
+      capabilities: 'Map'
+    } as any),
+    false,
+    'map rendering: non-queryable layer cannot use interactive features'
+  );
+  assertEqual(isTrivialWhere(' 1 = 1 '), true, 'map rendering: default filter is trivial');
+  assertEqual(isTrivialWhere("NAME = 'Alpha'"), false, 'map rendering: authored filter is non-trivial');
+}
+
+function test_publishedMapUx() {
+  const response = {
+    layers: [
+      { layerId: 0, layerName: 'Cities', legend: [{ label: 'City' }] },
+      { layerId: 1, layerName: 'Roads', legend: [{ label: 'Highway' }] },
+      { layerId: 2, layerName: 'Empty group', legend: [] }
+    ]
+  };
+  assertDeepEqual(
+    selectPublishedLegendLayers(response, 1).map((layer) => layer.layerId),
+    [1],
+    'published UX: dynamic rendering selects the active layer legend'
+  );
+  assertDeepEqual(
+    selectPublishedLegendLayers(response, 1, [0, 1, 2]).map((layer) => layer.layerId),
+    [0, 1],
+    'published UX: fused rendering includes visible non-empty legends'
+  );
+  assertEqual(
+    classifyMapRenderIssue({ status: 403, message: 'Forbidden' }).kind,
+    'authentication',
+    'published UX: authentication errors are actionable'
+  );
+  assertEqual(
+    classifyMapRenderIssue({ status: 400, message: 'Invalid layerDefs' }, { hasFilter: true }).kind,
+    'filter',
+    'published UX: invalid filtered exports identify the filter'
+  );
+  assertEqual(
+    classifyMapRenderIssue(new TypeError('Failed to fetch')).kind,
+    'network',
+    'published UX: network failures are identified'
+  );
 }
 
 function test_dedupeFeatures() {
@@ -501,6 +606,9 @@ function run() {
   const start = Date.now();
   test_getFeatureId();
   test_mapMath();
+  test_basemaps();
+  test_mapServerRenderingCapabilities();
+  test_publishedMapUx();
   test_dedupeFeatures();
   test_arcgisUrlHelpers();
   test_arcgisDescriptions();
@@ -511,7 +619,7 @@ function run() {
   test_arcgisRendererInfo();
   test_kmlStyle();
   const dur = Date.now() - start;
-  console.log(`OK - 11 suites passed in ${dur}ms`);
+  console.log(`OK - 14 suites passed in ${dur}ms`);
 }
 
 run();

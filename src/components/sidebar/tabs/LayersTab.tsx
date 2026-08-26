@@ -1,6 +1,6 @@
 import React from 'react';
 import { getRestServiceUrlInfo } from '../../../lib/arcgis';
-import { fetchLayerExtent4326, fetchServiceMetadata } from '../../../lib/esriLayer';
+import { fetchLayerExtent4326, fetchServiceMetadata, isQueryableMapLayer, type MapServerRendering } from '../../../lib/esriLayer';
 import { extentToBounds } from '../../../lib/geometry';
 import { friendlyServiceLabel, serviceDataBadge, serviceShortHint, serviceSummaryHint } from '../../../lib/serviceSemantics';
 import type { MapServiceInfo, MapServiceLayerInfo } from '../../../lib/types/arcgis-rest';
@@ -17,6 +17,8 @@ type Props = {
   renderedFeatureCount?: number;
   renderDurationMs?: number | null;
   renderMode?: 'feature' | 'dynamic' | 'fallback_dynamic' | 'image' | 'vector';
+  mapServerRendering?: MapServerRendering;
+  onMapServerRenderingChange?: (mode: MapServerRendering) => void;
   experimentalTiles?: boolean;
   onExperimentalTilesChange?: (enabled: boolean) => void;
   onZoomToExtent: (extent: { xmin: number; ymin: number; xmax: number; ymax: number } | null) => void;
@@ -42,6 +44,8 @@ export default function LayersTab({
   renderedFeatureCount = 0,
   renderDurationMs = null,
   renderMode = 'feature',
+  mapServerRendering = 'features',
+  onMapServerRenderingChange,
   experimentalTiles = false,
   onExperimentalTilesChange,
   onZoomToExtent,
@@ -130,6 +134,12 @@ export default function LayersTab({
   ].filter(Boolean) as string[];
   const canFallbackZoom = !!((layerMeta as any)?.extent || (serviceMeta as any)?.fullExtent || (serviceMeta as any)?.initialExtent) || !!onZoomToLayer;
   const isFeatureRender = renderMode === 'feature';
+  const showRenderingChoice =
+    parsed?.serviceType === 'MapServer' &&
+    typeof parsed.layerId === 'number' &&
+    isQueryableMapLayer(layerMeta) &&
+    !!onMapServerRenderingChange;
+  const usesFusedCache = showRenderingChoice && !!(serviceMeta as any)?.tileInfo;
   const showSublayerPicker = !!parsed?.serviceUrl && (parsed.serviceType === 'MapServer' || parsed.serviceType === 'FeatureServer');
 
   React.useEffect(() => {
@@ -343,6 +353,51 @@ export default function LayersTab({
           <div style={{ marginTop: 10, fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>{selectionHint}</div>
         ) : null}
 
+        {showRenderingChoice ? (
+          <fieldset className="rendering-choice">
+            <legend>Rendering</legend>
+            <div className="rendering-choice-grid">
+              <label className={`rendering-choice-option${mapServerRendering === 'features' ? ' is-active' : ''}`}>
+                <input
+                  type="radio"
+                  name="map-server-rendering"
+                  value="features"
+                  checked={mapServerRendering === 'features'}
+                  onChange={() => onMapServerRenderingChange?.('features')}
+                />
+                <span>
+                  <span className="rendering-choice-title">Interactive features</span>
+                  <span className="rendering-choice-description">Inspect, filter, restyle, and export individual features.</span>
+                </span>
+              </label>
+              <label className={`rendering-choice-option${mapServerRendering === 'published' ? ' is-active' : ''}`}>
+                <input
+                  type="radio"
+                  name="map-server-rendering"
+                  value="published"
+                  checked={mapServerRendering === 'published'}
+                  onChange={() => onMapServerRenderingChange?.('published')}
+                />
+                <span>
+                  <span className="rendering-choice-title">Published map</span>
+                  <span className="rendering-choice-description">
+                    {usesFusedCache
+                      ? 'Use the fast, authored service cache. Other published layers may be included.'
+                      : 'Use the cartography authored in ArcGIS. Faithful and fast, but pixels are not selectable.'}
+                  </span>
+                </span>
+              </label>
+            </div>
+            {mapServerRendering === 'published' ? (
+              <div className="rendering-choice-note">
+                {usesFusedCache
+                  ? 'This service publishes a fused cache, so its layers cannot be separated in raster mode.'
+                  : 'The active filter is sent to the map service when it supports layer definitions.'}
+              </div>
+            ) : null}
+          </fieldset>
+        ) : null}
+
         {(renderStatus === 'loading' || renderStatus === 'loaded') ? (
           <div role="status" aria-live="polite" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 11, color: 'var(--muted)' }}>
             {renderStatus === 'loading' ? (
@@ -351,7 +406,11 @@ export default function LayersTab({
             <span>
               {(() => {
                 if (!isFeatureRender) {
-                  const modeLabel = renderMode === 'vector' ? 'vector tiles' : 'imagery';
+                  const modeLabel = renderMode === 'vector'
+                    ? 'vector tiles'
+                    : mapServerRendering === 'published'
+                      ? 'the published map'
+                      : 'imagery';
                   return renderStatus === 'loading' ? `Rendering ${modeLabel}…` : `Rendered as ${modeLabel}.`;
                 }
                 if (renderStatus === 'loaded' && renderedFeatureCount === 0) {

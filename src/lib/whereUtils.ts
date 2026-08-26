@@ -9,6 +9,14 @@ export function normalizeWhereInput(s: string): string {
   }
 }
 
+export function isTrivialWhere(s: string | undefined | null): boolean {
+  try {
+    return String(s || '').replace(/\s+/g, '').toLowerCase() === '1=1';
+  } catch {
+    return false;
+  }
+}
+
 export function beautifyWhere(s: string, fieldsMeta: Array<{ name: string; type?: string; length?: number }> = []): string {
   try {
     s = normalizeWhereInput(s);

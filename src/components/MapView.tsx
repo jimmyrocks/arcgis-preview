@@ -23,7 +23,14 @@ import type { Feature, FeatureCollection } from 'geojson';
 import type { GeometryStyleOptions, AttributeStyleOptions, RasterStyleOptions } from '../lib/styleOptions';
 import type { Extent } from '../lib/types/arcgis-rest';
 import { extentToBounds, boundsToExtent4326, extentFromFeatures, boundsFromFeatures } from '../lib/geometry';
-import { resolveEsriLayer, fetchLayerMetadata, fetchServiceMetadata, summarizeService } from '../lib/esriLayer';
+import {
+  resolveEsriLayer,
+  fetchLayerMetadata,
+  fetchServiceMetadata,
+  isQueryableMapLayer,
+  summarizeService,
+  type MapServerRendering
+} from '../lib/esriLayer';
 import { applyFeatureSourceStyle } from '../lib/esriStyleRuntime';
 import { safeNumericIdAlternative } from '../lib/arcgisInteger';
 import type { GeometryKind } from '../lib/esriStyle';
@@ -34,6 +41,14 @@ import {
   LOCAL_VECTOR_TILE_LAYER,
   LocalVectorTileIndex
 } from '../lib/localVectorTiles';
+import {
+  applyBasemap,
+  DEFAULT_BASEMAP_KEY,
+  type BasemapSelection
+} from '../lib/basemaps';
+import { isTrivialWhere } from '../lib/whereUtils';
+import { classifyMapRenderIssue, type MapRenderIssue } from '../lib/mapRenderIssue';
+import MapRenderNotice from './MapRenderNotice';
 
 declare global {
   interface Window {
@@ -48,27 +63,16 @@ declare global {
   }
 }
 
-type BasemapKey =
-  | 'carto_positron'
-  | 'usgs_topo'
-  | 'usgs_imagery_topo'
-  | 'usgs_imagery'
-  | 'osm'
-  | 'carto_dark'
-  | 'carto_voyager'
-  | 'esri_worldimagery'
-  | 'opentopomap'
-  | { key: 'custom'; url: string; attribution?: string; subdomains?: string[]; detectRetina?: boolean };
-
 export type MapViewProps = {
   serviceUrl: string;
   selectedMapLayerId?: number;
   where?: string;
   forcedFetchPaused?: boolean;
   allFeaturesLoaded?: boolean;
-  basemap?: BasemapKey;
+  basemap?: BasemapSelection;
+  mapServerRendering?: MapServerRendering;
   layerOpacity?: number;
-  onBasemapChange?: (b: BasemapKey) => void;
+  onBasemapChange?: (b: BasemapSelection) => void;
   onBoundsChange?: (b: LngLatBounds) => void;
   onCenterZoomChange?: (center: LngLat, zoom: number) => void;
   onMouseMove?: (latlng: LngLat) => void;
@@ -98,13 +102,13 @@ export type MapViewProps = {
   onAutoFetchChange?: (enabled: boolean) => void;
   experimentalTiles?: boolean;
   onRenderTimingChange?: (milliseconds: number | null) => void;
+  onRequestInteractiveMode?: () => void;
+  onClearFilter?: () => void;
 };
 
 const ARC_SOURCE_ID = 'arcgis-source';
 const EXPERIMENTAL_TILE_SOURCE_ID = 'arcgis-experimental-tile-source';
 const EXPERIMENTAL_TILE_PROTOCOL = 'arcgis-preview-local-mvt';
-const BASEMAP_SOURCE_ID = 'basemap';
-const BASEMAP_LAYER_ID = 'basemap-layer';
 const RENDERER_PREFIX = 'arcgis-style';
 const CUSTOM_PREFIX = 'arcgis-custom';
 const LINE_HIT_LAYER_ID = `${CUSTOM_PREFIX}-line-hit`;
@@ -148,8 +152,6 @@ const MAP_BTN_STYLE: React.CSSProperties = {
   boxShadow: '0 1px 3px rgba(0,0,0,0.12)',
 };
 
-type BasemapConfig = { key: string; tiles: string[]; attribution: string };
-
 function normalizeGeometryType(esriType?: string): GeometryKind | undefined {
   if (!esriType) return undefined;
   const lc = esriType.toLowerCase();
@@ -158,107 +160,6 @@ function normalizeGeometryType(esriType?: string): GeometryKind | undefined {
   if (lc.includes('polyline')) return 'polyline';
   if (lc.includes('polygon')) return 'polygon';
   return undefined;
-}
-
-function tilesFromTemplate(template: string, subdomains?: string[], detectRetina?: boolean): string[] {
-  const retinaSuffix = detectRetina ? '' : '';
-  const cleanTemplate = template.replace('{r}', retinaSuffix);
-  if (!subdomains || !subdomains.length) return [cleanTemplate];
-  return subdomains.map((s) => cleanTemplate.replace('{s}', s));
-}
-
-function getBasemapConfig(key: BasemapKey | undefined): BasemapConfig {
-  if (key && typeof key === 'object' && key.url) {
-    return {
-      key: 'custom',
-      tiles: tilesFromTemplate(String(key.url), key.subdomains, key.detectRetina),
-      attribution: String(key.attribution || '')
-    };
-  }
-  switch (key) {
-    case 'usgs_topo':
-      return {
-        key: 'usgs_topo',
-        tiles: ['https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}'],
-        attribution: 'Tiles courtesy of the U.S. Geological Survey'
-      };
-    case 'usgs_imagery_topo':
-      return {
-        key: 'usgs_imagery_topo',
-        tiles: ['https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryTopo/MapServer/tile/{z}/{y}/{x}'],
-        attribution: 'Imagery courtesy of the U.S. Geological Survey'
-      };
-    case 'usgs_imagery':
-      return {
-        key: 'usgs_imagery',
-        tiles: ['https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}'],
-        attribution: 'Imagery courtesy of the U.S. Geological Survey'
-      };
-    case 'osm':
-      return {
-        key: 'osm',
-        tiles: tilesFromTemplate('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', ['a', 'b', 'c']),
-        attribution: '© OpenStreetMap contributors'
-      };
-    case 'carto_dark':
-      return {
-        key: 'carto_dark',
-        tiles: tilesFromTemplate('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', ['a', 'b', 'c', 'd']),
-        attribution: '© OpenStreetMap contributors © CARTO'
-      };
-    case 'carto_voyager':
-      return {
-        key: 'carto_voyager',
-        tiles: tilesFromTemplate('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', ['a', 'b', 'c', 'd']),
-        attribution: '© OpenStreetMap contributors © CARTO'
-      };
-    case 'esri_worldimagery':
-      return {
-        key: 'esri_worldimagery',
-        tiles: ['https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
-        attribution: 'Source: Esri'
-      };
-    case 'opentopomap':
-      return {
-        key: 'opentopomap',
-        tiles: tilesFromTemplate('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', ['a', 'b', 'c']),
-        attribution: '© OpenTopoMap (CC-BY-SA)'
-      };
-    case 'carto_positron':
-    default:
-      return {
-        key: 'carto_positron',
-        tiles: tilesFromTemplate('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', ['a', 'b', 'c', 'd']),
-        attribution: '© OpenStreetMap contributors © CARTO'
-      };
-  }
-}
-
-function applyBasemap(map: MapLibreMap, key: BasemapKey | undefined) {
-  const cfg = getBasemapConfig(key);
-  try {
-    if (map.getLayer(BASEMAP_LAYER_ID)) map.removeLayer(BASEMAP_LAYER_ID);
-  } catch {}
-  try {
-    if (map.getSource(BASEMAP_SOURCE_ID)) map.removeSource(BASEMAP_SOURCE_ID);
-  } catch {}
-  map.addSource(BASEMAP_SOURCE_ID, {
-    type: 'raster',
-    tiles: cfg.tiles,
-    tileSize: 256,
-    attribution: cfg.attribution
-  } as any);
-  map.addLayer({
-    id: BASEMAP_LAYER_ID,
-    type: 'raster',
-    source: BASEMAP_SOURCE_ID
-  });
-  // Keep basemap beneath all data/overlay layers
-  const layers = map.getStyle()?.layers || [];
-  const firstNonBase = layers.find((l) => l.id !== BASEMAP_LAYER_ID && l.id !== 'background');
-  if (firstNonBase) {
-    try { map.moveLayer(BASEMAP_LAYER_ID, firstNonBase.id); } catch {}
-  }
 }
 
 function multiplyOpacity(base: any, opacity: number): any {
@@ -361,6 +262,37 @@ function applyRasterStyleToLayer(
   entry['raster-opacity'] = rasterOpacityBase(style?.raster);
   baseMap.set(layerId, entry);
   applyOpacityToLayer(map, layerId, opacity, baseMap);
+}
+
+function addArcGISRasterLayer(
+  map: MapLibreMap,
+  tiles: string[],
+  tileSize: number,
+  attribution: string,
+  style: GeometryStyleOptions | undefined,
+  opacity: number,
+  baseMap: Map<string, Record<string, any>>
+) {
+  map.addSource(DYNAMIC_SOURCE_ID, {
+    type: 'raster',
+    tiles,
+    tileSize,
+    attribution,
+  } as any);
+  map.addLayer({
+    id: DYNAMIC_LAYER_ID,
+    type: 'raster',
+    source: DYNAMIC_SOURCE_ID,
+    paint: {
+      ...rasterPaintProperties(style?.raster),
+      'raster-opacity': 0,
+      'raster-opacity-transition': { duration: 240, delay: 0 },
+    } as any,
+  });
+  window.requestAnimationFrame(() => {
+    if (!map.getLayer(DYNAMIC_LAYER_ID)) return;
+    applyRasterStyleToLayer(map, DYNAMIC_LAYER_ID, style, opacity, baseMap);
+  });
 }
 
 function idFilter(id: string | number | null | undefined, idField?: string) {
@@ -719,7 +651,47 @@ function removeLayersForSource(map: MapLibreMap, sourceId: string) {
   }
 }
 
-function useMapReady(basemap: BasemapKey | undefined, initialCenter?: [number, number] | null, initialZoom?: number | null) {
+function waitForRasterSource(map: MapLibreMap, sourceId: string, serviceRootUrl: string, signal?: AbortSignal, timeoutMs = 12000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      map.off('sourcedata', onSourceData);
+      map.off('error', onError);
+      signal?.removeEventListener('abort', onAbort);
+      window.clearTimeout(timeoutId);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onSourceData = (event: any) => {
+      if (event?.sourceId !== sourceId) return;
+      try {
+        if (event.isSourceLoaded || map.isSourceLoaded(sourceId)) finish();
+      } catch {}
+    };
+    const onError = (event: any) => {
+      const eventSourceId = event?.sourceId || event?.source?.id;
+      const detail = String(event?.error?.message || event?.message || event?.error || '');
+      const belongsToSource = eventSourceId === sourceId || (!eventSourceId && detail.includes(serviceRootUrl));
+      if (belongsToSource) finish(event?.error || event || new Error('ArcGIS raster source failed'));
+    };
+    const onAbort = () => finish(new DOMException('Raster request cancelled', 'AbortError'));
+    const timeoutId = window.setTimeout(() => finish(new Error('ArcGIS raster request timed out')), timeoutMs);
+    map.on('sourcedata', onSourceData);
+    map.on('error', onError);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    try {
+      if (map.isSourceLoaded(sourceId)) finish();
+    } catch {}
+  });
+}
+
+function useMapReady(basemap: BasemapSelection | undefined, initialCenter?: [number, number] | null, initialZoom?: number | null) {
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const mapRef = React.useRef<MapLibreMap | null>(null);
   const [ready, setReady] = React.useState(false);
@@ -761,7 +733,7 @@ function useMapReady(basemap: BasemapKey | undefined, initialCenter?: [number, n
     };
     map.on('error', handleMapError);
     map.on('load', () => {
-      applyBasemap(map, basemap);
+      void applyBasemap(map, basemap);
       setReady(true);
     });
     return () => {
@@ -777,7 +749,7 @@ function useMapReady(basemap: BasemapKey | undefined, initialCenter?: [number, n
     if (!ready) return;
     const map = mapRef.current;
     if (!map) return;
-    applyBasemap(map, basemap);
+    void applyBasemap(map, basemap);
   }, [basemap, ready]);
 
   return { containerRef, mapRef, ready, mapError };
@@ -789,7 +761,8 @@ export default function MapView({
   where = '1=1',
   forcedFetchPaused = false,
   allFeaturesLoaded = false,
-  basemap = 'carto_positron',
+  basemap = DEFAULT_BASEMAP_KEY,
+  mapServerRendering = 'features',
   layerOpacity = 1,
   onBasemapChange,
   onBoundsChange,
@@ -818,7 +791,9 @@ export default function MapView({
   onManualFetchIntent,
   onAutoFetchChange,
   experimentalTiles = false,
-  onRenderTimingChange
+  onRenderTimingChange,
+  onRequestInteractiveMode,
+  onClearFilter,
 }: MapViewProps) {
   const { containerRef, mapRef, ready, mapError } = useMapReady(basemap, initialCenter, initialZoom);
   const renderSourceId = experimentalTiles ? EXPERIMENTAL_TILE_SOURCE_ID : ARC_SOURCE_ID;
@@ -841,6 +816,8 @@ export default function MapView({
   const interactionCleanupRef = React.useRef<(() => void) | null>(null);
   const sourceDataCleanupRef = React.useRef<(() => void) | null>(null);
   const [isLoading, setIsLoading] = React.useState<boolean>(false);
+  const [renderIssue, setRenderIssue] = React.useState<MapRenderIssue | null>(null);
+  const [renderAttempt, setRenderAttempt] = React.useState(0);
   const isLoadingRef = React.useRef<boolean>(false);
   const featureClickFlagRef = React.useRef<boolean>(false);
   const flashTimeoutRef = React.useRef<number | null>(null);
@@ -1070,6 +1047,7 @@ export default function MapView({
     if (!ready || !mapRef.current) return;
     const map = mapRef.current;
     let cancelled = false;
+    const rasterLoadController = new AbortController();
     const effectVersion = ++sourceEffectVersionRef.current;
     const debugArcgis = new URLSearchParams(window.location.search).get('debugArcgis') === '1';
     if (debugArcgis) console.debug('[arcgis-preview] source effect start', effectVersion, { serviceUrl, selectedMapLayerId });
@@ -1111,7 +1089,6 @@ export default function MapView({
     clearRendererArtifacts(map, CUSTOM_PREFIX);
     clearRendererArtifacts(map, HIGHLIGHT_SELECTED_PREFIX);
     clearRendererArtifacts(map, VECTOR_LAYER_PREFIX);
-    try { if (map.getLayer(BASEMAP_LAYER_ID)) map.moveLayer(BASEMAP_LAYER_ID); } catch {}
     try { if (map.getLayer(DYNAMIC_LAYER_ID)) map.removeLayer(DYNAMIC_LAYER_ID); } catch {}
     try { if (map.getSource(DYNAMIC_SOURCE_ID)) map.removeSource(DYNAMIC_SOURCE_ID); } catch {}
     try { if (map.getSource(VECTOR_SOURCE_ID)) map.removeSource(VECTOR_SOURCE_ID); } catch {}
@@ -1132,6 +1109,7 @@ export default function MapView({
 
     if (!serviceUrl) return;
 
+    setRenderIssue(null);
     setIsLoading(true);
     onStatusChange?.('loading');
 
@@ -1166,23 +1144,16 @@ export default function MapView({
               `${baseUrl}/export?f=image&format=png32&transparent=true&bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=${tileSize},${tileSize}&dpi=96`
             ];
           try {
-            map.addSource(DYNAMIC_SOURCE_ID, {
-              type: 'raster',
-              tiles,
-              tileSize,
-              attribution: (meta as any)?.copyrightText || ''
-            } as any);
-            map.addLayer({
-              id: DYNAMIC_LAYER_ID,
-              type: 'raster',
-              source: DYNAMIC_SOURCE_ID,
-              paint: { ...rasterPaintProperties(effectiveRasterStyle?.raster), 'raster-opacity': rasterOpacityBase(effectiveRasterStyle?.raster) }
-            });
-            applyRasterStyleToLayer(map, DYNAMIC_LAYER_ID, effectiveRasterStyle, layerOpacity, opacityBaseRef.current);
+            addArcGISRasterLayer(map, tiles, tileSize, (meta as any)?.copyrightText || '', effectiveRasterStyle, layerOpacity, opacityBaseRef.current);
+            await waitForRasterSource(map, DYNAMIC_SOURCE_ID, baseUrl, rasterLoadController.signal);
+            if (cancelled) return;
+            setRenderIssue(null);
             onStatusChange?.('loaded');
             setIsLoading(false);
             onFeatureCollection?.({ type: 'FeatureCollection', features: [] });
           } catch (err) {
+            if (cancelled) return;
+            setRenderIssue(classifyMapRenderIssue(err, { hasFilter: false }));
             onStatusChange?.('error');
             setIsLoading(false);
           }
@@ -1217,23 +1188,16 @@ export default function MapView({
               `${baseUrl}/exportImage?f=image&format=png32&bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=${tileSize},${tileSize}&dpi=96`
             ];
           try {
-            map.addSource(DYNAMIC_SOURCE_ID, {
-              type: 'raster',
-              tiles,
-              tileSize,
-              attribution: (meta as any)?.copyrightText || ''
-            } as any);
-            map.addLayer({
-              id: DYNAMIC_LAYER_ID,
-              type: 'raster',
-              source: DYNAMIC_SOURCE_ID,
-              paint: { ...rasterPaintProperties(effectiveRasterStyle?.raster), 'raster-opacity': rasterOpacityBase(effectiveRasterStyle?.raster) }
-            });
-            applyRasterStyleToLayer(map, DYNAMIC_LAYER_ID, effectiveRasterStyle, layerOpacity, opacityBaseRef.current);
+            addArcGISRasterLayer(map, tiles, tileSize, (meta as any)?.copyrightText || '', effectiveRasterStyle, layerOpacity, opacityBaseRef.current);
+            await waitForRasterSource(map, DYNAMIC_SOURCE_ID, baseUrl, rasterLoadController.signal);
+            if (cancelled) return;
+            setRenderIssue(null);
             onStatusChange?.('loaded');
             setIsLoading(false);
             onFeatureCollection?.({ type: 'FeatureCollection', features: [] });
           } catch (err) {
+            if (cancelled) return;
+            setRenderIssue(classifyMapRenderIssue(err, { hasFilter: false }));
             onStatusChange?.('error');
             setIsLoading(false);
           }
@@ -1474,25 +1438,30 @@ export default function MapView({
           } catch {}
         }
 
-        const layerType = String((lm as any)?.type || '').toLowerCase();
-        const geometryType = String((lm as any)?.geometryType || '').toLowerCase();
-        const capabilities = String((lm as any)?.capabilities || '').toLowerCase();
-        const hasGeometry = !!geometryType && geometryType !== 'esrigeometrynone';
-        const isRasterLike = layerType.includes('raster') || layerType.includes('image') || layerType.includes('mosaic');
-        const isGroupLayer = layerType.includes('group');
-        const hasQueryCapability = !capabilities || capabilities.includes('query');
-        const isQueryable = hasGeometry && !isRasterLike && !isGroupLayer && hasQueryCapability;
+        const isQueryable = isQueryableMapLayer(lm);
+        const usePublishedMap =
+          mapServerRendering === 'published' &&
+          resolved.serviceType === 'MapServer' &&
+          typeof resolved.layerId === 'number';
 
-        if (!isQueryable) {
+        if (usePublishedMap || !isQueryable) {
           const baseUrl = (resolved.serviceRootUrl || resolved.url || '').replace(/\/+$/, '');
           const tileInfo = (serviceMeta as any)?.tileInfo;
           const tileSize = Number(tileInfo?.rows || tileInfo?.cols) || 256;
-          const layerFilter = typeof resolved.layerId === 'number' ? `show:${resolved.layerId}` : '';
+          // Cached MapServer tiles are commonly fused, so their guaranteed
+          // published view is the whole authored service. Dynamic services can
+          // isolate this sublayer through the export operation.
+          const useFusedCache = usePublishedMap && !!tileInfo;
+          const layerFilter = !useFusedCache && typeof resolved.layerId === 'number' ? `show:${resolved.layerId}` : '';
           const layersParam = layerFilter ? `&layers=${encodeURIComponent(layerFilter)}` : '';
+          const layerDefsParam =
+            usePublishedMap && !useFusedCache && typeof resolved.layerId === 'number' && !isTrivialWhere(where)
+              ? `&layerDefs=${encodeURIComponent(JSON.stringify({ [resolved.layerId]: where.trim() }))}`
+              : '';
           const tiles = (tileInfo && !layerFilter)
             ? [`${baseUrl}/tile/{z}/{y}/{x}`]
             : [
-              `${baseUrl}/export?f=image&format=png32&transparent=true&bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=${tileSize},${tileSize}&dpi=96${layersParam}`
+              `${baseUrl}/export?f=image&format=png32&transparent=true&bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=${tileSize},${tileSize}&dpi=96${layersParam}${layerDefsParam}`
             ];
 
           try {
@@ -1507,26 +1476,22 @@ export default function MapView({
             }
           } catch { /* ignore extent */ }
 
-          try {
-            map.addSource(DYNAMIC_SOURCE_ID, {
-              type: 'raster',
-              tiles,
-              tileSize,
-              attribution: (serviceMeta as any)?.copyrightText || ''
-            } as any);
-            map.addLayer({
-              id: DYNAMIC_LAYER_ID,
-              type: 'raster',
-              source: DYNAMIC_SOURCE_ID,
-              paint: { ...rasterPaintProperties(effectiveRasterStyle?.raster), 'raster-opacity': rasterOpacityBase(effectiveRasterStyle?.raster) }
-            });
-            applyRasterStyleToLayer(map, DYNAMIC_LAYER_ID, effectiveRasterStyle, layerOpacity, opacityBaseRef.current);
-          } catch {}
-
-          onRenderModeChange?.('dynamic', `Layer does not support Query (${(lm as any)?.type || 'non-feature'})`);
-          onStatusChange?.('loaded');
-          setIsLoading(false);
+          if (usePublishedMap) onRenderModeChange?.('dynamic');
+          else onRenderModeChange?.('dynamic', `Layer does not support Query (${(lm as any)?.type || 'non-feature'})`);
           onFeatureCollection?.({ type: 'FeatureCollection', features: [] });
+          try {
+            addArcGISRasterLayer(map, tiles, tileSize, (serviceMeta as any)?.copyrightText || '', effectiveRasterStyle, layerOpacity, opacityBaseRef.current);
+            await waitForRasterSource(map, DYNAMIC_SOURCE_ID, baseUrl, rasterLoadController.signal);
+            if (cancelled) return;
+            setRenderIssue(null);
+            onStatusChange?.('loaded');
+            setIsLoading(false);
+          } catch (err) {
+            if (cancelled) return;
+            setRenderIssue(classifyMapRenderIssue(err, { hasFilter: !isTrivialWhere(where) }));
+            onStatusChange?.('error');
+            setIsLoading(false);
+          }
           return;
         }
 
@@ -1812,6 +1777,7 @@ export default function MapView({
 
     return () => {
       cancelled = true;
+      rasterLoadController.abort();
       if (debugArcgis) {
         console.debug('[arcgis-preview] source effect cleanup', effectVersion, {
           ownsCurrent: Boolean(ownedArcSource && arcSourceRef.current === ownedArcSource),
@@ -1854,7 +1820,7 @@ export default function MapView({
         arcSourceRef.current = null;
       }
     };
-  }, [serviceUrl, selectedMapLayerId, ready, experimentalTiles]);
+  }, [serviceUrl, selectedMapLayerId, ready, experimentalTiles, mapServerRendering, mapServerRendering === 'published' ? where : '', renderAttempt]);
 
   React.useEffect(() => {
     if (!ready || !mapRef.current) return;
@@ -2083,6 +2049,17 @@ export default function MapView({
       return 0;
     }
   }, [featureCollection]);
+  const resolvedForUi = React.useMemo(() => resolveEsriLayer(serviceUrl, selectedMapLayerId), [serviceUrl, selectedMapLayerId]);
+  const canRecoverWithInteractiveFeatures =
+    mapServerRendering === 'published' &&
+    resolvedForUi.serviceType === 'MapServer' &&
+    typeof resolvedForUi.layerId === 'number' &&
+    !!onRequestInteractiveMode;
+  const transitionLabel = canRecoverWithInteractiveFeatures
+    ? 'Loading published map…'
+    : resolvedForUi.serviceType === 'MapServer' && typeof resolvedForUi.layerId === 'number'
+      ? 'Loading interactive features…'
+      : 'Updating map…';
 
   const fetchControl = fetchControlContainer ? createPortal(
     <FetchControl
@@ -2121,9 +2098,36 @@ export default function MapView({
           </div>
         </div>
       )}
+      {!mapError && isLoading && serviceUrl ? (
+        <div className="map-render-transition" role="status" aria-live="polite" aria-atomic="true">
+          <span className="ui-spinner" aria-hidden />
+          <span>{transitionLabel}</span>
+        </div>
+      ) : null}
+      {!mapError && renderIssue ? (
+        <MapRenderNotice
+          issue={renderIssue}
+          serviceUrl={resolvedForUi.serviceRootUrl || resolvedForUi.url}
+          canSwitchToInteractive={canRecoverWithInteractiveFeatures}
+          canClearFilter={!isTrivialWhere(where)}
+          onRetry={() => {
+            setRenderIssue(null);
+            setRenderAttempt((value) => value + 1);
+          }}
+          onSwitchToInteractive={() => {
+            setRenderIssue(null);
+            onRequestInteractiveMode?.();
+          }}
+          onClearFilter={() => {
+            setRenderIssue(null);
+            onClearFilter?.();
+          }}
+          onDismiss={() => setRenderIssue(null)}
+        />
+      ) : null}
       {fetchControl}
       <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 20, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-        <BasemapChooser value={basemap} onChange={(b) => onBasemapChange?.(b as BasemapKey)} />
+        <BasemapChooser value={basemap} onChange={(b) => onBasemapChange?.(b)} />
         {/* Compass / north-reset — only visible when rotated or tilted */}
         {(Math.abs(bearing) > 1 || pitch > 1) && (
           <button

@@ -3,10 +3,12 @@ import { ToastContainer, ToastOptions, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import MapView from './components/MapView';
 import MapLegend, { type LegendHighlight } from './components/MapLegend';
+import PublishedMapLegend from './components/PublishedMapLegend';
 import ErrorBoundary from './components/ErrorBoundary';
-import { beautifyWhere, normalizeWhereInput, validateWhere } from './lib/whereUtils';
+import { beautifyWhere, isTrivialWhere, normalizeWhereInput, validateWhere } from './lib/whereUtils';
 import WhereEditor, { type WhereEditorHandle } from './components/WhereEditor';
 import type { Extent } from './lib/types/arcgis-rest';
+import { normalizeBasemapKey, type BasemapKey } from './lib/basemaps';
 import FlashButton from './components/ui/FlashButton';
 import MoreInfoOverlay from './components/MoreInfoOverlay';
 import Sidebar, { type ExportProgress } from './components/sidebar/components/Sidebar';
@@ -16,7 +18,7 @@ import { defaultStyleOptions } from './lib/styleOptions';
 import { classifyCategorical, classifyNumeric, inferSubMode } from './lib/classifyField';
 import { QUALITATIVE_PALETTES, SEQUENTIAL_PALETTES } from './lib/colorPalettes';
 import type { MapServiceInfo, MapServiceLayerInfo } from './lib/types/arcgis-rest';
-import { resolveEsriLayer, fetchLayerMetadata, fetchFeatureCount, fetchFeatureCountInExtent } from './lib/esriLayer';
+import { resolveEsriLayer, fetchLayerMetadata, fetchFeatureCount, fetchFeatureCountInExtent, type MapServerRendering } from './lib/esriLayer';
 import { extentFromFeatures } from './lib/geometry';
 import { findFeatureById, getFeatureId } from './lib/ids';
 import { getRestServiceUrlInfo } from './lib/arcgis';
@@ -59,11 +61,12 @@ function getInitialWhere(): string {
   return '1=1';
 }
 
-function isTrivialWhere(s: string | undefined | null): boolean {
+function getInitialMapServerRendering(): MapServerRendering {
   try {
-    const noSpace = String(s || '').replace(/\s+/g, '').toLowerCase();
-    return noSpace === '1=1';
-  } catch { return false; }
+    return new URLSearchParams(location.search).get('render') === 'published' ? 'published' : 'features';
+  } catch {
+    return 'features';
+  }
 }
 
 function normalizeWhereText(s: string | undefined | null): string {
@@ -243,14 +246,11 @@ function formatCenterForUrl(center: [number, number] | null): string {
   return `${formatUrlNumber(lat)},${formatUrlNumber(lng)}`;
 }
 
-function getInitialBasemap(): 'carto_positron' | 'usgs_topo' | 'usgs_imagery_topo' | 'usgs_imagery' | 'osm' | 'carto_dark' | 'carto_voyager' | 'esri_worldimagery' | 'opentopomap' {
-  const allowed = new Set(['carto_positron', 'usgs_topo', 'usgs_imagery_topo', 'usgs_imagery', 'osm', 'carto_dark', 'carto_voyager', 'esri_worldimagery', 'opentopomap']);
+function getInitialBasemap(): BasemapKey {
   try {
-    const v = new URLSearchParams(location.search).get('basemap') || '';
-    const key = v.toLowerCase();
-    if (allowed.has(key)) return key as any;
+    return normalizeBasemapKey(new URLSearchParams(location.search).get('basemap'));
   } catch { }
-  return 'carto_positron';
+  return normalizeBasemapKey(null);
 }
 
 function getInitialTab(): 'select' | 'details' | 'query' | 'data' | 'download' | 'style' {
@@ -485,6 +485,7 @@ export default function App() {
   const [featureCollection, setFeatureCollection] = useState<any>({ type: 'FeatureCollection', features: [] });
   const [suspectedDuplicateIds, setSuspectedDuplicateIds] = useState<Array<string | number>>([]);
   const [renderMode, setRenderMode] = useState<'feature' | 'dynamic' | 'fallback_dynamic' | 'image' | 'vector'>('feature');
+  const [mapServerRendering, setMapServerRendering] = useState<MapServerRendering>(getInitialMapServerRendering);
   const [layerOpacity, setLayerOpacity] = useState<number>(1);
   const [experimentalTiles, setExperimentalTiles] = useState<boolean>(
     () => new URLSearchParams(location.search).get('experimentalTiles') === '1'
@@ -519,6 +520,9 @@ export default function App() {
     try { return resolveEsriLayer(serviceUrl, selectedMapLayerId); } catch { return { type: 'unknown', url: null, serviceRootUrl: null } as any; }
   }, [serviceUrl, selectedMapLayerId]);
   const isFeatureLayer = (resolvedLayer as any)?.type === 'feature';
+  const isMapServerLayerSelection =
+    (resolvedLayer as any)?.serviceType === 'MapServer' &&
+    typeof (resolvedLayer as any)?.layerId === 'number';
   const [where, setWhere] = useState<string>(getInitialWhere());
   const [whereInput, setWhereInput] = useState<string>(getInitialWhere());
   const perfWarningKey = React.useMemo(
@@ -880,6 +884,14 @@ export default function App() {
     return { ...(featureCollection || { type: 'FeatureCollection' }), type: 'FeatureCollection', features };
   }, [featureCollection, styleOptions.display?.hideSuspectedDuplicates, suspectedDuplicateIds]);
   const legendVisible = styleOptions.display?.showLegend !== false;
+  const publishedLegendLayerIds = React.useMemo(() => {
+    const showServiceLegend = (resolvedLayer as any)?.layerId == null || !!(serviceMeta as any)?.tileInfo;
+    if (!showServiceLegend || !Array.isArray(serviceMeta?.layers)) return undefined;
+    return serviceMeta.layers
+      .filter((layer: any) => layer?.defaultVisibility !== false)
+      .map((layer: any) => Number(layer.id))
+      .filter(Number.isFinite);
+  }, [resolvedLayer, serviceMeta]);
 
   function handleStyleByField(fieldName: string) {
     const meta = (layerMeta?.fields as any[] | undefined)?.find((f: any) => f?.name === fieldName);
@@ -943,6 +955,9 @@ export default function App() {
         if (experimentalTiles) params.set('experimentalTiles', '1');
         else params.delete('experimentalTiles');
 
+        if (isMapServerLayerSelection && mapServerRendering === 'published') params.set('render', 'published');
+        else params.delete('render');
+
         if (styleMode === 'custom' || styleMode === 'attribute') {
           params.set('styleMode', styleMode);
           // Only carry `style` when something actually differs from the
@@ -977,7 +992,11 @@ export default function App() {
     }, delay);
 
     return () => window.clearTimeout(timeoutId);
-  }, [activeTab, basemap, bbox, center, experimentalTiles, isMobile, legendCollapsed, mapPositionReady, selectedFeatureId, serviceUrl, styleMode, styleOptions, attributeStyle, where, zoom]);
+  }, [activeTab, basemap, bbox, center, experimentalTiles, isMapServerLayerSelection, isMobile, legendCollapsed, mapPositionReady, mapServerRendering, selectedFeatureId, serviceUrl, styleMode, styleOptions, attributeStyle, where, zoom]);
+
+  useEffect(() => {
+    if (!isMapServerLayerSelection) setMapServerRendering('features');
+  }, [isMapServerLayerSelection]);
 
   // Keep header WHERE input mirrored with state
   useEffect(() => { setWhereInput(where || '1=1'); }, [where]);
@@ -1255,7 +1274,7 @@ export default function App() {
                       <button onClick={() => setDismissedIssuesKey(whereInput)} style={{ padding: '2px 6px', borderRadius: 9999, border: '1px solid var(--border)', background: 'var(--panel)', color: 'var(--text)', cursor: 'pointer' }}>Dismiss</button>
                     </div>
                   ) : null}
-                  {(renderMode !== 'feature' && !isTrivialWhere(whereInput || '')) ? (
+                  {(renderMode === 'fallback_dynamic' && !isTrivialWhere(whereInput || '')) ? (
                     <div
                       role="button"
                       tabIndex={0}
@@ -1322,7 +1341,7 @@ export default function App() {
                     {`⚠️ ${filterIssueCount} ${filterIssueCount === 1 ? 'issue' : 'issues'}`}
                   </button>
                 ) : null}
-                {(renderMode !== 'feature' && !isTrivialWhere(whereInput || '')) ? (
+                {(renderMode === 'fallback_dynamic' && !isTrivialWhere(whereInput || '')) ? (
                   <div
                     role="button"
                     tabIndex={0}
@@ -1384,7 +1403,16 @@ export default function App() {
               forcedFetchPaused={perfCheckPending || !!perfWarning}
               allFeaturesLoaded={allFeaturesLoadedInMemory}
               experimentalTiles={experimentalTiles}
+              mapServerRendering={mapServerRendering}
               onRenderTimingChange={setRenderDurationMs}
+              onRequestInteractiveMode={() => {
+                setMapServerRendering('features');
+                setRenderMode('feature');
+                setFallbackReason(undefined);
+                setSelectedFeatureId(null);
+                setRenderStatus('loading');
+              }}
+              onClearFilter={handleClearWhere}
               onManualFetchIntent={dismissPerfWarning}
               onAutoFetchChange={setAutoFetchEnabled}
               basemap={basemap}
@@ -1482,7 +1510,7 @@ export default function App() {
                 }
               }}
             />
-            {legendVisible ? (
+            {legendVisible && renderMode === 'feature' ? (
               <MapLegend
                 mode={styleMode}
                 options={styleOptions}
@@ -1494,6 +1522,15 @@ export default function App() {
                 onCollapsedChange={setLegendCollapsed}
                 activeHighlightKey={legendHighlight?.key ?? null}
                 onHighlightChange={setLegendHighlight}
+              />
+            ) : null}
+            {legendVisible && (renderMode === 'dynamic' || renderMode === 'fallback_dynamic') && (resolvedLayer as any)?.serviceType === 'MapServer' && (resolvedLayer as any)?.serviceRootUrl ? (
+              <PublishedMapLegend
+                serviceRootUrl={(resolvedLayer as any).serviceRootUrl}
+                selectedLayerId={(resolvedLayer as any).layerId}
+                visibleLayerIds={publishedLegendLayerIds}
+                collapsed={legendCollapsed}
+                onCollapsedChange={setLegendCollapsed}
               />
             ) : null}
             </ErrorBoundary>
@@ -1861,6 +1898,14 @@ export default function App() {
               renderedFeatureCount={inViewFeatureCount}
               renderDurationMs={renderDurationMs}
               renderMode={renderMode}
+              mapServerRendering={mapServerRendering}
+              onMapServerRenderingChange={(next) => {
+                setMapServerRendering(next);
+                setRenderMode(next === 'published' ? 'dynamic' : 'feature');
+                setFallbackReason(undefined);
+                setSelectedFeatureId(null);
+                setRenderStatus('loading');
+              }}
               experimentalTiles={experimentalTiles}
               onExperimentalTilesChange={(enabled) => {
                 setRenderDurationMs(null);
