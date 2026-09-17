@@ -1,0 +1,21 @@
+GIS server directory: third-party copyright and terms
+
+Source: https://mappingsupport.com/p/surf_gis/list-federal-state-county-city-GIS-servers.txt
+Author: Joseph Elfelt, MappingSupport.com
+Terms reviewed from the September 3, 2026 text edition.
+
+This bundled directory is a derivative work available to everyone for free.
+Commercial products based on this derivative directory are prohibited unless
+Joseph Elfelt provides specific written permission authorizing that use.
+
+Original terms:
+
+This list of GIS server addresses and their status as currently working or a "dead link" is copyrighted by Joseph Elfelt.  Contact information is on the first page under the title.  This copyright covers all file formats that are produced
+by Joseph Elfelt.
+
+Scrapping data from the PDF file is prohibited.
+
+Commercial products based on this list are prohibited unless specific written permission is obtained from Joseph Elfelt authorizing that commercial use.
+
+Permission is given for anyone to make a derivative work based on this list as long as the derivative work is available to everyone for free.  Your derivative work must clearly refer to this original copyright and state that
+commercial products based on your derivative work are prohibited unless specific written permission is obtained from Joseph Elfelt authorizing that commercial use.
